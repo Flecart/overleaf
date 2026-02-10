@@ -996,6 +996,50 @@ async function initialize(webRouter, privateApiRouter, publicApiRouter) {
       PermissionsController.requirePermission('chat'),
       ChatController.editMessage
     )
+
+    // Thread (comment) routes for review panel and AI tutor
+    webRouter.get(
+      '/project/:project_id/threads',
+      AuthorizationMiddleware.blockRestrictedUserFromProject,
+      AuthorizationMiddleware.ensureUserCanReadProject,
+      ChatController.getThreads
+    )
+    webRouter.post(
+      '/project/:project_id/thread/:thread_id/messages',
+      AuthorizationMiddleware.blockRestrictedUserFromProject,
+      AuthorizationMiddleware.ensureUserCanReadProject,
+      ChatController.sendThreadMessage
+    )
+    webRouter.post(
+      '/project/:project_id/thread/:thread_id/resolve',
+      AuthorizationMiddleware.blockRestrictedUserFromProject,
+      AuthorizationMiddleware.ensureUserCanReadProject,
+      ChatController.resolveThread
+    )
+    webRouter.post(
+      '/project/:project_id/thread/:thread_id/reopen',
+      AuthorizationMiddleware.blockRestrictedUserFromProject,
+      AuthorizationMiddleware.ensureUserCanReadProject,
+      ChatController.reopenThread
+    )
+    webRouter.delete(
+      '/project/:project_id/thread/:thread_id/messages/:message_id',
+      AuthorizationMiddleware.blockRestrictedUserFromProject,
+      AuthorizationMiddleware.ensureUserCanReadProject,
+      ChatController.deleteThreadMessage
+    )
+    webRouter.post(
+      '/project/:project_id/thread/:thread_id/messages/:message_id/edit',
+      AuthorizationMiddleware.blockRestrictedUserFromProject,
+      AuthorizationMiddleware.ensureUserCanReadProject,
+      ChatController.editThreadMessage
+    )
+    webRouter.delete(
+      '/project/:project_id/thread/:thread_id',
+      AuthorizationMiddleware.blockRestrictedUserFromProject,
+      AuthorizationMiddleware.ensureUserCanReadProject,
+      ChatController.deleteThread
+    )
   }
 
   webRouter.post(

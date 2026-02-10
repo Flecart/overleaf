@@ -25,14 +25,18 @@ export function extractAbstract(
   }
 
   const fullMatch = match[0]
-  const abstractContent = match[1].trim()
-  const startPos = documentContent.indexOf(fullMatch)
-  const abstractStartOffset = fullMatch.indexOf(match[1])
+  const rawContent = match[1]
+  const abstractContent = rawContent.trim()
+  const matchStart = documentContent.indexOf(fullMatch)
+  const rawContentStart = matchStart + fullMatch.indexOf(rawContent)
+  // Account for leading whitespace removed by trim()
+  const leadingWhitespace = rawContent.length - rawContent.trimStart().length
+  const startPos = rawContentStart + leadingWhitespace
 
   return {
     content: abstractContent,
-    startPos: startPos + abstractStartOffset,
-    endPos: startPos + abstractStartOffset + match[1].length,
+    startPos,
+    endPos: startPos + abstractContent.length,
   }
 }
 

@@ -87,9 +87,96 @@ async function editMessage(req, res, next) {
   res.sendStatus(204)
 }
 
+async function sendThreadMessage(req, res) {
+  const { project_id: projectId, thread_id: threadId } = req.params
+  const { content } = req.body
+  const userId = SessionManager.getLoggedInUserId(req.session)
+  if (userId == null) {
+    throw new Error('no logged-in user')
+  }
+
+  await ChatApiHandler.promises.sendComment(projectId, threadId, userId, content)
+
+  res.sendStatus(204)
+}
+
+async function getThreads(req, res) {
+  const { project_id: projectId } = req.params
+  const threads = await ChatApiHandler.promises.getThreads(projectId)
+
+  await ChatManager.promises.injectUserInfoIntoThreads(threads)
+  res.json(threads)
+}
+
+async function resolveThread(req, res) {
+  const { project_id: projectId, thread_id: threadId } = req.params
+  const userId = SessionManager.getLoggedInUserId(req.session)
+  if (userId == null) {
+    throw new Error('no logged-in user')
+  }
+
+  await ChatApiHandler.promises.resolveThread(projectId, threadId, userId)
+
+  EditorRealTimeController.emitToRoom(projectId, 'resolve-thread', {
+    threadId,
+    userId,
+  })
+  res.sendStatus(204)
+}
+
+async function reopenThread(req, res) {
+  const { project_id: projectId, thread_id: threadId } = req.params
+
+  await ChatApiHandler.promises.reopenThread(projectId, threadId)
+
+  EditorRealTimeController.emitToRoom(projectId, 'reopen-thread', { threadId })
+  res.sendStatus(204)
+}
+
+async function deleteThreadMessage(req, res) {
+  const { project_id: projectId, thread_id: threadId, message_id: messageId } =
+    req.params
+
+  await ChatApiHandler.promises.deleteMessage(projectId, threadId, messageId)
+  res.sendStatus(204)
+}
+
+async function editThreadMessage(req, res) {
+  const { project_id: projectId, thread_id: threadId, message_id: messageId } =
+    req.params
+  const { content } = req.body
+  const userId = SessionManager.getLoggedInUserId(req.session)
+  if (userId == null) {
+    throw new Error('no logged-in user')
+  }
+
+  await ChatApiHandler.promises.editMessage(
+    projectId,
+    threadId,
+    messageId,
+    userId,
+    content
+  )
+  res.sendStatus(204)
+}
+
+async function deleteThread(req, res) {
+  const { project_id: projectId, thread_id: threadId } = req.params
+
+  await ChatApiHandler.promises.deleteThread(projectId, threadId)
+  res.sendStatus(204)
+}
+
 export default {
   sendMessage: expressify(sendMessage),
   getMessages: expressify(getMessages),
   deleteMessage: expressify(deleteMessage),
   editMessage: expressify(editMessage),
+  sendThreadMessage: expressify(sendThreadMessage),
+  getThreads: expressify(getThreads),
+  resolveThread: expressify(resolveThread),
+  reopenThread: expressify(reopenThread),
+  deleteThreadMessage: expressify(deleteThreadMessage),
+  editThreadMessage: expressify(editThreadMessage),
+  deleteThread: expressify(deleteThread),
 }

@@ -20,6 +20,7 @@ import {
   FullProjectSearchPanel,
   hasFullProjectSearch,
 } from '@/features/ide-redesign/components/full-project-search-panel'
+import AiTutorPanel from '@/features/ide-redesign/components/ai-tutor/ai-tutor-panel'
 import { sendSearchEvent } from '@/features/event-tracking/search-events'
 import { useProjectContext } from '@/shared/context/project-context'
 import { useCommandProvider } from '@/features/ide-react/hooks/use-command-provider'
@@ -140,6 +141,12 @@ export const RailLayout = () => {
         hide:
           !getMeta('ol-capabilities')?.includes('chat') ||
           isRestrictedTokenMember,
+      },
+      {
+        key: 'ai-tutor',
+        icon: 'smart_toy',
+        title: 'AI Tutor',
+        component: <AiTutorPanel />,
       },
       ...moduleRailEntries,
     ],
