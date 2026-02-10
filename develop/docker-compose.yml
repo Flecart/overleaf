@@ -26,7 +26,7 @@ services:
       - dev.env
     environment:
       - TEXLIVE_IMAGE=texlive-full # docker build texlive -t texlive-full
-      - SANDBOXED_COMPILES=true
+      - SANDBOXED_COMPILES=false
       - SANDBOXED_COMPILES_HOST_DIR_COMPILES=${PWD}/compiles
       - SANDBOXED_COMPILES_HOST_DIR_OUTPUT=${PWD}/output
     user: root
@@ -63,12 +63,15 @@ services:
       dockerfile: services/filestore/Dockerfile
     env_file:
       - dev.env
-    #    environment:
-    #      - ENABLE_CONVERSIONS=true
+    environment:
+      BACKEND: fs
+      OVERLEAF_EDITOR_PROJECT_BLOBS_BUCKET: "/buckets/project_blobs"
+      OVERLEAF_EDITOR_BLOBS_BUCKET: "/buckets/blobs"
     volumes:
       - filestore-public-files:/overleaf/services/filestore/public_files
       - filestore-template-files:/overleaf/services/filestore/template_files
       - filestore-uploads:/overleaf/services/filestore/uploads
+      - history-v1-buckets:/buckets
 
   history-v1:
     build:
