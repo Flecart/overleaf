@@ -151,6 +151,7 @@ services:
       - sharelatex-data:/var/lib/overleaf
       - web-data:/overleaf/services/web/data
       - ../services/web/app:/overleaf/services/web/app
+      - ./ai-tutor-logs:/var/lib/overleaf/ai-tutor-logs
     depends_on:
       - mongo
       - redis

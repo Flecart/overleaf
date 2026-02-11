@@ -6,6 +6,8 @@ import SessionManager from '../Authentication/SessionManager.mjs'
 import UserInfoManager from '../User/UserInfoManager.mjs'
 import UserInfoController from '../User/UserInfoController.mjs'
 import ChatManager from './ChatManager.mjs'
+import fs from 'node:fs'
+import path from 'node:path'
 
 async function sendMessage(req, res) {
   const { project_id: projectId } = req.params
@@ -95,7 +97,11 @@ async function sendThreadMessage(req, res) {
     throw new Error('no logged-in user')
   }
 
-  await ChatApiHandler.promises.sendComment(projectId, threadId, userId, content)
+  const message = await ChatApiHandler.promises.sendComment(projectId, threadId, userId, content)
+
+  const user = await UserInfoManager.promises.getPersonalInfo(message.user_id)
+  message.user = UserInfoController.formatPersonalInfo(user)
+  EditorRealTimeController.emitToRoom(projectId, 'new-comment', threadId, message)
 
   res.sendStatus(204)
 }
@@ -117,10 +123,7 @@ async function resolveThread(req, res) {
 
   await ChatApiHandler.promises.resolveThread(projectId, threadId, userId)
 
-  EditorRealTimeController.emitToRoom(projectId, 'resolve-thread', {
-    threadId,
-    userId,
-  })
+  EditorRealTimeController.emitToRoom(projectId, 'resolve-thread', threadId, userId)
   res.sendStatus(204)
 }
 
@@ -129,7 +132,7 @@ async function reopenThread(req, res) {
 
   await ChatApiHandler.promises.reopenThread(projectId, threadId)
 
-  EditorRealTimeController.emitToRoom(projectId, 'reopen-thread', { threadId })
+  EditorRealTimeController.emitToRoom(projectId, 'reopen-thread', threadId)
   res.sendStatus(204)
 }
 
@@ -164,7 +167,52 @@ async function deleteThread(req, res) {
   const { project_id: projectId, thread_id: threadId } = req.params
 
   await ChatApiHandler.promises.deleteThread(projectId, threadId)
+
+  EditorRealTimeController.emitToRoom(projectId, 'delete-thread', threadId)
   res.sendStatus(204)
+}
+
+async function logAITutorSuggestions(req, res) {
+  const { project_id: projectId } = req.params
+  const { timestamp, abstract, suggestions, model } = req.body
+  const userId = SessionManager.getLoggedInUserId(req.session)
+
+  if (!userId) {
+    return res.sendStatus(401)
+  }
+
+  try {
+    // Create logs directory if it doesn't exist
+    const logDir = '/var/lib/overleaf/ai-tutor-logs'
+    if (!fs.existsSync(logDir)) {
+      fs.mkdirSync(logDir, { recursive: true })
+    }
+
+    // Create a log entry
+    const logEntry = {
+      timestamp,
+      projectId,
+      userId: userId.toString(),
+      model,
+      abstractLength: abstract.length,
+      suggestionsCount: suggestions.length,
+      suggestions: suggestions.map(s => ({
+        text: s.text,
+        comment: s.comment,
+      })),
+    }
+
+    // Append to daily log file
+    const date = new Date(timestamp).toISOString().split('T')[0]
+    const logFile = path.join(logDir, `ai-tutor-${date}.jsonl`)
+    fs.appendFileSync(logFile, JSON.stringify(logEntry) + '\n')
+
+    res.sendStatus(204)
+  } catch (error) {
+    console.error('Failed to log AI tutor suggestions:', error)
+    // Don't fail the request - logging is optional
+    res.sendStatus(204)
+  }
 }
 
 export default {
@@ -179,4 +227,5 @@ export default {
   deleteThreadMessage: expressify(deleteThreadMessage),
   editThreadMessage: expressify(editThreadMessage),
   deleteThread: expressify(deleteThread),
+  logAITutorSuggestions: expressify(logAITutorSuggestions),
 }

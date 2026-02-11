@@ -77,6 +77,21 @@ export default function AiTutorPanel() {
 
       console.log('[AI Tutor] Adding', result.comments.length, 'comments...')
 
+      // Optional: Send analytics/logging to server
+      try {
+        await postJSON(`/project/${projectId}/ai-tutor-log`, {
+          body: {
+            timestamp: new Date().toISOString(),
+            abstract: abstractData.content,
+            suggestions: result.comments,
+            model: 'gpt-4o',
+          },
+        })
+      } catch (logErr) {
+        console.warn('[AI Tutor] Failed to log suggestions:', logErr)
+        // Continue anyway - don't fail if logging fails
+      }
+
       for (const comment of result.comments) {
         const threadId = RangesTracker.generateId() as ThreadId
 
