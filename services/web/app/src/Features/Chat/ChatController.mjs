@@ -6,6 +6,9 @@ import SessionManager from '../Authentication/SessionManager.mjs'
 import UserInfoManager from '../User/UserInfoManager.mjs'
 import UserInfoController from '../User/UserInfoController.mjs'
 import ChatManager from './ChatManager.mjs'
+import ProjectEntityHandler from '../Project/ProjectEntityHandler.mjs'
+import ProjectGetter from '../Project/ProjectGetter.mjs'
+import DocumentHelper from '../Documents/DocumentHelper.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -215,6 +218,307 @@ async function logAITutorSuggestions(req, res) {
   }
 }
 
+async function analyzeWholeProject(req, res) {
+  const { project_id: projectId } = req.params
+  const userId = SessionManager.getLoggedInUserId(req.session)
+
+  if (!userId) {
+    return res.sendStatus(401)
+  }
+
+  // Phase 1: Gather all docs and files from the project
+  const allDocs = await ProjectEntityHandler.promises.getAllDocs(projectId)
+  const allFiles = await ProjectEntityHandler.promises.getAllFiles(projectId)
+
+  const project = await ProjectGetter.promises.getProject(projectId, {
+    rootDoc_id: 1,
+    name: 1,
+  })
+
+  if (!project) {
+    return res.status(404).json({ error: 'Project not found' })
+  }
+
+  // Phase 2: Find the root .tex file
+  let rootDocPath = null
+
+  // Try using project's rootDoc_id
+  if (project.rootDoc_id) {
+    for (const [docPath, docData] of Object.entries(allDocs)) {
+      if (docData._id.toString() === project.rootDoc_id.toString()) {
+        rootDocPath = docPath
+        break
+      }
+    }
+  }
+
+  // Fallback: scan for \documentclass
+  if (!rootDocPath) {
+    for (const [docPath, docData] of Object.entries(allDocs)) {
+      if (docPath.endsWith('.tex') && docData.lines) {
+        const content = Array.isArray(docData.lines)
+          ? docData.lines.join('\n')
+          : docData.lines
+        if (DocumentHelper.contentHasDocumentclass(content)) {
+          rootDocPath = docPath
+          break
+        }
+      }
+    }
+  }
+
+  if (!rootDocPath) {
+    return res.status(400).json({
+      error: 'Could not find root .tex file with \\documentclass',
+    })
+  }
+
+  // Phase 3: Build doc content map (normalized path -> content string)
+  const docContentMap = {}
+  for (const [docPath, docData] of Object.entries(allDocs)) {
+    const normalized = docPath.startsWith('/') ? docPath.slice(1) : docPath
+    const content = Array.isArray(docData.lines)
+      ? docData.lines.join('\n')
+      : docData.lines || ''
+    docContentMap[normalized] = content
+  }
+
+  // Phase 4: Recursively inline \input/\include, extract references, track included files
+  const texFilesOrdered = []
+  const visitedFiles = new Set()
+  const referencedFigures = new Set()
+  const referencedBibFiles = new Set()
+  const referencedPackages = new Set()
+
+  function resolveDocPath(filePath) {
+    if (docContentMap[filePath] !== undefined) return filePath
+    if (docContentMap[filePath + '.tex'] !== undefined)
+      return filePath + '.tex'
+    return null
+  }
+
+  function extractReferences(content) {
+    let match
+    // \includegraphics
+    const graphicsRe = /\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}/g
+    while ((match = graphicsRe.exec(content)) !== null) {
+      referencedFigures.add(match[1].trim())
+    }
+    // \bibliography / \addbibresource
+    const bibRe = /\\(?:bibliography|addbibresource)\{([^}]+)\}/g
+    while ((match = bibRe.exec(content)) !== null) {
+      for (const b of match[1].split(',')) {
+        referencedBibFiles.add(b.trim())
+      }
+    }
+    // \usepackage / \RequirePackage
+    const pkgRe =
+      /\\(?:usepackage|RequirePackage)(?:\[[^\]]*\])?\{([^}]+)\}/g
+    while ((match = pkgRe.exec(content)) !== null) {
+      for (const p of match[1].split(',')) {
+        referencedPackages.add(p.trim())
+      }
+    }
+    // \documentclass
+    const clsRe = /\\documentclass(?:\[[^\]]*\])?\{([^}]+)\}/g
+    while ((match = clsRe.exec(content)) !== null) {
+      referencedPackages.add(match[1].trim())
+    }
+  }
+
+  // Recursively expand \input{} and \include{} inline, replacing each
+  // command with the actual content of the referenced file.
+  function inlineExpand(filePath, basePath) {
+    // Resolve relative path based on the parent file's directory
+    let resolvedPath = filePath
+    if (basePath && !filePath.startsWith('/')) {
+      const baseDir = basePath.includes('/')
+        ? basePath.substring(0, basePath.lastIndexOf('/'))
+        : ''
+      resolvedPath = baseDir ? baseDir + '/' + filePath : filePath
+    }
+
+    const actualPath = resolveDocPath(resolvedPath)
+    if (!actualPath || visitedFiles.has(actualPath)) {
+      // Cycle or missing file: leave a comment marker
+      return `% [AI Tutor] Could not inline: ${filePath} (${!actualPath ? 'not found' : 'already included'})`
+    }
+
+    visitedFiles.add(actualPath)
+    texFilesOrdered.push(actualPath)
+
+    const content = docContentMap[actualPath]
+    if (!content) return ''
+
+    // Extract figure, bib, package references from this file
+    extractReferences(content)
+
+    // Replace each \input{...} and \include{...} with the inlined content
+    const expanded = content.replace(
+      /\\(?:input|include)\{([^}]+)\}/g,
+      (_match, includedFile) => {
+        const trimmed = includedFile.trim()
+        return (
+          `% ========== INLINED FROM: ${trimmed} ==========\n` +
+          inlineExpand(trimmed, actualPath) +
+          `\n% ========== END OF: ${trimmed} ==========`
+        )
+      }
+    )
+
+    return expanded
+  }
+
+  const normalizedRootPath = rootDocPath.startsWith('/')
+    ? rootDocPath.slice(1)
+    : rootDocPath
+
+  // Phase 5: Merge by inlining from root document
+  const mergedTexContent = inlineExpand(normalizedRootPath, '')
+
+  // Phase 6: Categorize ALL files into 5 categories
+  const allDocPaths = Object.keys(allDocs).map(p =>
+    p.startsWith('/') ? p.slice(1) : p
+  )
+  const allFilePaths = Object.keys(allFiles).map(p =>
+    p.startsWith('/') ? p.slice(1) : p
+  )
+
+  // Category 2: figures - match references against binary files
+  const figureFiles = []
+  for (const filePath of allFilePaths) {
+    const fileNoExt = filePath.replace(/\.[^.]+$/, '')
+    for (const ref of referencedFigures) {
+      const refNoExt = ref.replace(/\.[^.]+$/, '')
+      if (
+        filePath === ref ||
+        filePath.endsWith('/' + ref) ||
+        fileNoExt === refNoExt ||
+        fileNoExt.endsWith('/' + refNoExt)
+      ) {
+        figureFiles.push(filePath)
+        break
+      }
+    }
+  }
+
+  // Category 3: bib files
+  const bibFiles = []
+  for (const docPath of allDocPaths) {
+    if (docPath.endsWith('.bib')) {
+      const docNoExt = docPath.replace(/\.bib$/, '')
+      for (const ref of referencedBibFiles) {
+        const refNoExt = ref.replace(/\.bib$/, '')
+        if (
+          docPath === ref ||
+          docPath === ref + '.bib' ||
+          docNoExt === refNoExt ||
+          docNoExt.endsWith('/' + refNoExt)
+        ) {
+          bibFiles.push(docPath)
+          break
+        }
+      }
+    }
+  }
+  for (const filePath of allFilePaths) {
+    if (filePath.endsWith('.bib') && !bibFiles.includes(filePath)) {
+      bibFiles.push(filePath)
+    }
+  }
+
+  // Category 4: useful files (.sty, .cls, .bst, etc.)
+  const usefulExts = ['.sty', '.cls', '.bst', '.def', '.cfg', '.clo', '.fd']
+  const usefulFiles = []
+  for (const docPath of allDocPaths) {
+    if (
+      usefulExts.some(ext => docPath.endsWith(ext)) &&
+      !texFilesOrdered.includes(docPath) &&
+      !bibFiles.includes(docPath)
+    ) {
+      usefulFiles.push(docPath)
+    }
+  }
+  for (const filePath of allFilePaths) {
+    if (
+      usefulExts.some(ext => filePath.endsWith(ext)) &&
+      !figureFiles.includes(filePath)
+    ) {
+      usefulFiles.push(filePath)
+    }
+  }
+
+  // Category 5: irrelevant files
+  const categorized = new Set([
+    ...texFilesOrdered,
+    ...figureFiles,
+    ...bibFiles,
+    ...usefulFiles,
+  ])
+  const irrelevantFiles = []
+  for (const docPath of allDocPaths) {
+    if (!categorized.has(docPath)) irrelevantFiles.push(docPath)
+  }
+  for (const filePath of allFilePaths) {
+    if (!categorized.has(filePath)) irrelevantFiles.push(filePath)
+  }
+
+  // Phase 7: Write cache files to disk
+  const cacheDir = path.join('/var/lib/overleaf/ai-tutor-cache', projectId)
+  if (!fs.existsSync(cacheDir)) {
+    fs.mkdirSync(cacheDir, { recursive: true })
+  }
+
+  const mergedTexPath = path.join(cacheDir, 'merged.tex')
+  fs.writeFileSync(mergedTexPath, mergedTexContent, 'utf-8')
+
+  const metadata = {
+    projectId,
+    projectName: project.name || '',
+    rootDocPath: normalizedRootPath,
+    analyzedAt: new Date().toISOString(),
+    categories: {
+      texFiles: {
+        description: 'TeX files merged in reading order',
+        files: texFilesOrdered,
+        count: texFilesOrdered.length,
+      },
+      figures: {
+        description: 'Referenced figure files',
+        files: figureFiles,
+        references: Array.from(referencedFigures),
+        count: figureFiles.length,
+      },
+      bibFiles: {
+        description: 'Referenced bibliography files',
+        files: bibFiles,
+        references: Array.from(referencedBibFiles),
+        count: bibFiles.length,
+      },
+      usefulFiles: {
+        description: 'Other useful files (style, class, etc.)',
+        files: usefulFiles,
+        count: usefulFiles.length,
+      },
+      irrelevantFiles: {
+        description: 'Irrelevant or unused files',
+        files: irrelevantFiles,
+        count: irrelevantFiles.length,
+      },
+    },
+    mergedTexPath,
+    mergedTexLength: mergedTexContent.length,
+    totalDocs: allDocPaths.length,
+    totalFiles: allFilePaths.length,
+  }
+
+  const metadataPath = path.join(cacheDir, 'metadata.json')
+  fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2), 'utf-8')
+
+  // Phase 8: Return metadata to frontend
+  res.json(metadata)
+}
+
 export default {
   sendMessage: expressify(sendMessage),
   getMessages: expressify(getMessages),
@@ -228,4 +532,5 @@ export default {
   editThreadMessage: expressify(editThreadMessage),
   deleteThread: expressify(deleteThread),
   logAITutorSuggestions: expressify(logAITutorSuggestions),
+  analyzeWholeProject: expressify(analyzeWholeProject),
 }

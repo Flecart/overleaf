@@ -1080,6 +1080,14 @@ async function initialize(webRouter, privateApiRouter, publicApiRouter) {
       AuthorizationMiddleware.ensureUserCanReadProject,
       ChatController.logAITutorSuggestions
     )
+
+    // AI Tutor whole project analysis endpoint
+    webRouter.post(
+      '/project/:project_id/ai-tutor-analyze',
+      AuthorizationMiddleware.blockRestrictedUserFromProject,
+      AuthorizationMiddleware.ensureUserCanReadProject,
+      ChatController.analyzeWholeProject
+    )
   }
 
   webRouter.post(

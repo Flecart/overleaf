@@ -1,3 +1,51 @@
+import { postJSON } from '@/infrastructure/fetch-json'
+
+export interface FileCategory {
+  description: string
+  files: string[]
+  references?: string[]
+  count: number
+}
+
+export interface WholeProjectMetadata {
+  projectId: string
+  projectName: string
+  rootDocPath: string
+  analyzedAt: string
+  categories: {
+    texFiles: FileCategory
+    figures: FileCategory
+    bibFiles: FileCategory
+    usefulFiles: FileCategory
+    irrelevantFiles: FileCategory
+  }
+  mergedTexPath: string
+  mergedTexLength: number
+  totalDocs: number
+  totalFiles: number
+}
+
+export async function analyzeWholeProject(
+  projectId: string
+): Promise<{
+  success: boolean
+  metadata?: WholeProjectMetadata
+  error?: string
+}> {
+  try {
+    const metadata = (await postJSON(
+      `/project/${projectId}/ai-tutor-analyze`
+    )) as WholeProjectMetadata
+    return { success: true, metadata }
+  } catch (error) {
+    return {
+      success: false,
+      error:
+        error instanceof Error ? error.message : 'An unknown error occurred.',
+    }
+  }
+}
+
 export interface AIComment {
   text: string
   comment: string

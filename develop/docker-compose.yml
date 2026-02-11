@@ -152,6 +152,7 @@ services:
       - web-data:/overleaf/services/web/data
       - ../services/web/app:/overleaf/services/web/app
       - ./ai-tutor-logs:/var/lib/overleaf/ai-tutor-logs
+      - ./ai-tutor-cache:/var/lib/overleaf/ai-tutor-cache
     depends_on:
       - mongo
       - redis
