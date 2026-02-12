@@ -18,6 +18,9 @@ import { fileURLToPath } from 'node:url'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const SKILLS_DIR = path.join(__dirname, 'ai-tutor-skills')
 
+// Set AI_TUTOR_LOG_PROMPTS=true in .env to log full LLM prompts and responses
+const LOG_PROMPTS = process.env.AI_TUTOR_LOG_PROMPTS === 'true'
+
 // ---------------------------------------------------------------------------
 // Skill loader
 // ---------------------------------------------------------------------------
@@ -207,8 +210,11 @@ async function generateObjectWithRetry(options, label = 'LLM call', logOverrides
       (fraction < 1.0 ? ` (truncated to ${Math.round(fraction * 100)}%)` : '')
     )
     // Log full prompt template with embedded content previewed
-    console.log(`[AI Tutor] [${label}] System prompt:\n${logSystem}`)
-    console.log(`[AI Tutor] [${label}] User prompt:\n${fraction < 1.0 ? previewText(prompt) : logPromptFull}`)
+    if (LOG_PROMPTS)
+    {
+      console.log(`[AI Tutor] [${label}] System prompt:\n${logSystem}`)
+      console.log(`[AI Tutor] [${label}] User prompt:\n${fraction < 1.0 ? previewText(prompt) : logPromptFull}`)
+    }
     const startTime = Date.now()
 
     try
@@ -219,7 +225,10 @@ async function generateObjectWithRetry(options, label = 'LLM call', logOverrides
       console.log(
         `[AI Tutor] [${label}] Completed in ${elapsed}s — response: ${responseStr.length} chars`
       )
-      console.log(`[AI Tutor] [${label}] Response:\n${previewText(responseStr)}`)
+      if (LOG_PROMPTS)
+      {
+        console.log(`[AI Tutor] [${label}] Response:\n${previewText(responseStr)}`)
+      }
       return result
     } catch (err)
     {
@@ -905,7 +914,7 @@ Produce at most 10 comments. Prioritize fewer, deeper comments over many shallow
 [warning] (should fix), or  
 [critical] (must fix).  
 
-Avoid including too many low impact [suggestion] comments. If there are only a few meaningful issues, generate fewer comments.
+Avoid including too many low impact [suggestion] comments. If there are only a few meaningful issues, generate fewer comments. Your comments must be concise, limited to 1 to 3 sentences to ensure readability.
 
 ## Writing Skills Reference
 ${skillContent}
@@ -938,7 +947,7 @@ Produce at most 10 comments. Prioritize fewer, deeper comments over many shallow
 [warning] (should fix), or  
 [critical] (must fix).  
 
-Avoid including too many low impact [suggestion] comments. If there are only a few meaningful issues, generate fewer comments.
+Avoid including too many low impact [suggestion] comments. If there are only a few meaningful issues, generate fewer comments. Your comments must be concise, limited to 1 to 3 sentences to ensure readability.
 
 ## Writing Skills Reference
 ${previewText(skillContent)}
