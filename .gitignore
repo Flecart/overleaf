@@ -2,5 +2,5 @@
 .dockerignore
 
 # user defined files
-.env
+.env_credentials
 docker-compose.override.yml

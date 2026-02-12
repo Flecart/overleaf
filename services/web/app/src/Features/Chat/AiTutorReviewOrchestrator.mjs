@@ -962,12 +962,16 @@ function buildSkeleton(sections)
 
 /**
  * Collect sections matching a list of title strings from the Phase 1 mapping.
+ *
+ * Deduplicates overlapping sections: if a parent section (e.g., \section{Methodology})
+ * and its child subsections (e.g., \subsection{Game-Theoretic Preliminaries}) are both
+ * matched, only the parent is included since its content already contains the children.
  */
 function collectSectionContent(sections, titleList)
 {
   if (!titleList || titleList.length === 0) return ''
   const lowerTitles = new Set(titleList.map(t => t.toLowerCase().trim()))
-  const matched = sections.filter(s =>
+  let matched = sections.filter(s =>
     lowerTitles.has(s.title.toLowerCase().trim())
   )
   if (matched.length === 0)
@@ -992,9 +996,30 @@ function collectSectionContent(sections, titleList)
         `[AI Tutor] WARN: No sections matched (exact or fuzzy) for titles: [${titleList.join(', ')}]`
       )
     }
-    return fuzzyMatched.map(s => s.content).join('\n\n')
+    matched = fuzzyMatched
   }
-  return matched.map(s => s.content).join('\n\n')
+
+  // Remove child sections whose char range is fully contained within a parent section.
+  // This prevents duplication when both \section{Methodology} and its \subsection{...}
+  // children are matched — the parent already includes all child content.
+  const deduped = matched.filter(s => {
+    return !matched.some(
+      parent =>
+        parent !== s &&
+        parent.charStart <= s.charStart &&
+        parent.charEnd >= s.charEnd
+    )
+  })
+
+  if (deduped.length < matched.length)
+  {
+    const removed = matched.length - deduped.length
+    console.log(
+      `[AI Tutor] Deduped ${removed} child section(s) already contained in parent sections`
+    )
+  }
+
+  return deduped.map(s => s.content).join('\n\n')
 }
 
 /**
@@ -1102,10 +1127,10 @@ Do NOT produce:
 
 Every comment should answer the question: "What should the author *do* to make this part of the paper stronger?"
 
-Produce at most 10 comments. Prioritize fewer, deeper comments over many shallow ones. Label each comment as one of:  
-[suggestion] (nice to have),  
-[warning] (should fix), or  
-[critical] (must fix).  
+Produce at most 10 comments. Prioritize fewer, deeper comments over many shallow ones. Label each comment as one of:
+[suggestion] (nice to have),
+[warning] (should fix), or
+[critical] (must fix).
 
 Avoid including too many low impact [suggestion] comments. If there are only a few meaningful issues, generate fewer comments. Your comments must be concise, limited to 1 to 3 sentences to ensure readability.
 
@@ -1135,10 +1160,10 @@ Do NOT produce:
 
 Every comment should answer the question: "What should the author *do* to make this part of the paper stronger?"
 
-Produce at most 10 comments. Prioritize fewer, deeper comments over many shallow ones. Label each comment as one of:  
-[suggestion] (nice to have),  
-[warning] (should fix), or  
-[critical] (must fix).  
+Produce at most 10 comments. Prioritize fewer, deeper comments over many shallow ones. Label each comment as one of:
+[suggestion] (nice to have),
+[warning] (should fix), or
+[critical] (must fix).
 
 Avoid including too many low impact [suggestion] comments. If there are only a few meaningful issues, generate fewer comments. Your comments must be concise, limited to 1 to 3 sentences to ensure readability.
 
