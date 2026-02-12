@@ -140,6 +140,7 @@ services:
       target: dev
     env_file:
       - dev.env
+      - ../.env
     environment:
       - APP_NAME=Overleaf Community Edition
       - ENABLED_LINKED_FILE_TYPES=project_file,project_output_file

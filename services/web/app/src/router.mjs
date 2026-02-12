@@ -1088,6 +1088,22 @@ async function initialize(webRouter, privateApiRouter, publicApiRouter) {
       AuthorizationMiddleware.ensureUserCanReadProject,
       ChatController.analyzeWholeProject
     )
+
+    // AI Tutor multi-agent review endpoint
+    webRouter.post(
+      '/project/:project_id/ai-tutor-review',
+      AuthorizationMiddleware.blockRestrictedUserFromProject,
+      AuthorizationMiddleware.ensureUserCanReadProject,
+      ChatController.reviewWholeProject
+    )
+
+    // AI Tutor delete all AI Tutor comments
+    webRouter.post(
+      '/project/:project_id/ai-tutor-delete-comments',
+      AuthorizationMiddleware.blockRestrictedUserFromProject,
+      AuthorizationMiddleware.ensureUserCanReadProject,
+      ChatController.deleteAiTutorComments
+    )
   }
 
   webRouter.post(

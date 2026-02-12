@@ -5,10 +5,11 @@ import { useProjectContext } from '@/shared/context/project-context'
 import { postJSON } from '@/infrastructure/fetch-json'
 import RangesTracker from '@overleaf/ranges-tracker'
 import {
-  extractAbstract,
-  analyzeAbstractWithOpenAI,
-  analyzeWholeProject,
+  runFullReview,
+  deleteAiTutorComments,
   WholeProjectMetadata,
+  ReviewResult,
+  ReviewComment,
 } from '@/features/editor-left-menu/utils/ai-tutor-service'
 import { ThreadId } from '../../../../../../types/review-panel/review-panel'
 import { CommentOperation } from '../../../../../../types/change'
@@ -18,123 +19,114 @@ import OLFormGroup from '@/shared/components/ol/ol-form-group'
 import OLFormLabel from '@/shared/components/ol/ol-form-label'
 import MaterialIcon from '@/shared/components/material-icon'
 
+const MODEL_OPTIONS = [
+  { value: 'gpt-4o', label: 'GPT-4o (Best quality)' },
+  { value: 'gpt-4o-mini', label: 'GPT-4o Mini (Faster, cheaper)' },
+  { value: 'gpt-4.1', label: 'GPT-4.1' },
+  { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini' },
+]
+
 export default function AiTutorPanel() {
-  const [apiKey, setApiKey] = useState('')
-  const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
 
-  // Whole project analysis state
-  const [isAnalyzingProject, setIsAnalyzingProject] = useState(false)
-  const [projectMetadata, setProjectMetadata] =
-    useState<WholeProjectMetadata | null>(null)
-  const [analysisInfo, setAnalysisInfo] = useState<string | null>(null)
+  // Model selection
+  const [selectedModel, setSelectedModel] = useState('gpt-4o')
+
+  // Delete comments state
+  const [isDeleting, setIsDeleting] = useState(false)
+
+  // Full review state
+  const [isReviewing, setIsReviewing] = useState(false)
+  const [reviewResult, setReviewResult] = useState<ReviewResult | null>(null)
+  const [reviewProgress, setReviewProgress] = useState<string | null>(null)
+  const [appliedCount, setAppliedCount] = useState(0)
 
   const { currentDocument } = useEditorOpenDocContext()
   const { projectId } = useProjectContext()
 
-  const handleWholeProjectAnalysis = useCallback(async () => {
-    setIsAnalyzingProject(true)
+  // -----------------------------------------------------------------------
+  // Run full review (analyzes project + runs multi-agent review in one call)
+  // -----------------------------------------------------------------------
+  const handleFullReview = useCallback(async () => {
+    setIsReviewing(true)
     setError(null)
     setSuccessMessage(null)
-    setAnalysisInfo(null)
+    setReviewProgress(
+      'Analyzing project structure and running multi-agent review... This may take 1-2 minutes.'
+    )
+    setReviewResult(null)
+    setAppliedCount(0)
 
     try {
-      const result = await analyzeWholeProject(projectId)
+      const result = await runFullReview(projectId, selectedModel)
 
       if (!result.success) {
-        setError(result.error || 'Failed to analyze project.')
-        setIsAnalyzingProject(false)
+        setError(result.error || 'Review failed.')
+        setIsReviewing(false)
+        setReviewProgress(null)
         return
       }
 
-      setProjectMetadata(result.metadata!)
+      setReviewResult(result.result!)
+      setReviewProgress(null)
 
-      const meta = result.metadata!
-      const infoLines = [
-        `Root: ${meta.rootDocPath}`,
-        `TeX files: ${meta.categories.texFiles.count}`,
-        `Figures: ${meta.categories.figures.count}`,
-        `Bib files: ${meta.categories.bibFiles.count}`,
-        `Other useful: ${meta.categories.usefulFiles.count}`,
-        `Unused: ${meta.categories.irrelevantFiles.count}`,
-        `Merged length: ${meta.mergedTexLength.toLocaleString()} chars`,
-      ]
-      setAnalysisInfo(infoLines.join(' | '))
+      const r = result.result!
+      const failedNote =
+        r.failedAgents.length > 0
+          ? ` (${r.failedAgents.length} agent(s) skipped)`
+          : ''
       setSuccessMessage(
-        `Project analyzed! Found ${meta.categories.texFiles.count} TeX file(s) ` +
-          `merged into ${meta.mergedTexLength.toLocaleString()} characters. ` +
-          `Ready for whole-paper writing suggestions.`
+        `Review complete! ${r.summary.total} comments from ${Object.keys(r.summary.byCategory).length} reviewers.` +
+          ` Paper type: ${r.classification.paperType}.${failedNote}`
       )
     } catch (err) {
-      console.error('[AI Tutor] Whole project analysis error:', err)
+      console.error('[AI Tutor] Full review error:', err)
       setError(
         err instanceof Error ? err.message : 'An unexpected error occurred.'
       )
+      setReviewProgress(null)
     } finally {
-      setIsAnalyzingProject(false)
+      setIsReviewing(false)
     }
-  }, [projectId])
+  }, [projectId, selectedModel])
 
-  const handleAnalyze = useCallback(async () => {
-    if (!apiKey.trim()) return
-
-    if (!currentDocument) {
-      setError('No document is currently open. Please open a document first.')
+  // -----------------------------------------------------------------------
+  // Apply review comments to currently open document
+  // -----------------------------------------------------------------------
+  const handleApplyComments = useCallback(async () => {
+    if (!reviewResult || !currentDocument) {
+      setError('No review results or no document open.')
       return
     }
 
-    setIsLoading(true)
     setError(null)
     setSuccessMessage(null)
 
-    try {
-      const documentContent = currentDocument.getSnapshot()
+    const snapshot = currentDocument.getSnapshot()
+    if (!snapshot) {
+      setError('Cannot read current document content.')
+      return
+    }
 
-      if (!documentContent) {
-        setError(
-          'Unable to read document content. Make sure you have the main .tex file open in the editor.'
-        )
-        setIsLoading(false)
-        return
+    // Collect ALL comments from every doc group and try to match them
+    // against the currently open document via text search
+    const allComments = Object.values(
+      reviewResult.commentsByDoc
+    ).flat() as ReviewComment[]
+
+    let applied = 0
+    let skipped = 0
+
+    for (const comment of allComments) {
+      // Search for the highlightText in the current document snapshot
+      const idx = snapshot.indexOf(comment.highlightText)
+      if (idx === -1) {
+        skipped++
+        continue
       }
 
-      const abstractData = extractAbstract(documentContent)
-      if (!abstractData) {
-        setError(
-          'No abstract found in the currently open file. Please open the main .tex file that contains \\begin{abstract}...\\end{abstract} and try again.'
-        )
-        setIsLoading(false)
-        return
-      }
-
-      const result = await analyzeAbstractWithOpenAI(
-        apiKey.trim(),
-        abstractData.content,
-        abstractData.startPos
-      )
-
-      if (!result.success) {
-        setError(result.error || 'Failed to analyze abstract.')
-        setIsLoading(false)
-        return
-      }
-
-      // Optional: Send analytics/logging to server
       try {
-        await postJSON(`/project/${projectId}/ai-tutor-log`, {
-          body: {
-            timestamp: new Date().toISOString(),
-            abstract: abstractData.content,
-            suggestions: result.comments,
-            model: 'gpt-4o',
-          },
-        })
-      } catch (logErr) {
-        console.warn('[AI Tutor] Failed to log suggestions:', logErr)
-      }
-
-      for (const comment of result.comments) {
         const threadId = RangesTracker.generateId() as ThreadId
 
         await postJSON(`/project/${projectId}/thread/${threadId}/messages`, {
@@ -142,33 +134,94 @@ export default function AiTutorPanel() {
         })
 
         const op: CommentOperation = {
-          c: comment.text,
-          p: comment.startOffset,
+          c: comment.highlightText,
+          p: idx,
           t: threadId,
         }
 
         currentDocument.submitOp(op)
+        applied++
+      } catch (err) {
+        console.warn('[AI Tutor] Failed to apply comment:', err)
+        skipped++
       }
+    }
 
-      setSuccessMessage(
-        `Added ${result.comments.length} comment${result.comments.length !== 1 ? 's' : ''} to your abstract.`
-      )
-      setError(null)
+    setAppliedCount(applied)
+    setSuccessMessage(
+      `Applied ${applied} comment(s) to current document.` +
+        (skipped > 0
+          ? ` ${skipped} comment(s) didn't match this document (they belong to other files).`
+          : '')
+    )
+  }, [reviewResult, currentDocument, projectId])
+
+  // -----------------------------------------------------------------------
+  // Delete all AI Tutor comments
+  // -----------------------------------------------------------------------
+  const handleDeleteComments = useCallback(async () => {
+    setIsDeleting(true)
+    setError(null)
+    setSuccessMessage(null)
+
+    try {
+      const result = await deleteAiTutorComments(projectId)
+      if (result.deleted > 0) {
+        setSuccessMessage(
+          `Deleted ${result.deleted} AI Tutor comment(s). Refresh the page to see changes.`
+        )
+      } else {
+        setSuccessMessage('No AI Tutor comments found to delete.')
+      }
     } catch (err) {
-      console.error('[AI Tutor] Error:', err)
+      console.error('[AI Tutor] Delete comments error:', err)
       setError(
-        err instanceof Error ? err.message : 'An unexpected error occurred.'
+        err instanceof Error ? err.message : 'Failed to delete comments.'
       )
     } finally {
-      setIsLoading(false)
+      setIsDeleting(false)
     }
-  }, [apiKey, currentDocument, projectId])
+  }, [projectId])
+
+  // Helper to extract metadata from review result
+  const projectMetadata: WholeProjectMetadata | undefined =
+    reviewResult?.metadata
 
   return (
     <div className="ai-tutor-panel">
       <RailPanelHeader title="AI Tutor" />
       <div style={{ padding: '12px 16px' }}>
-        {/* Whole Project Analysis Section */}
+        {/* ── Delete AI Tutor Comments ── */}
+        <OLButton
+          variant="danger"
+          size="sm"
+          onClick={handleDeleteComments}
+          disabled={isDeleting || isReviewing}
+          style={{ width: '100%', marginBottom: '12px' }}
+        >
+          {isDeleting ? 'Deleting...' : 'Delete All AI Tutor Comments'}
+        </OLButton>
+
+        {/* ── Model Selection ── */}
+        <OLFormGroup controlId="ai-tutor-model" style={{ marginBottom: '12px' }}>
+          <OLFormLabel>Model</OLFormLabel>
+          <OLFormControl
+            as="select"
+            value={selectedModel}
+            onChange={(e: React.ChangeEvent<HTMLSelectElement>) =>
+              setSelectedModel(e.target.value)
+            }
+            disabled={isReviewing}
+          >
+            {MODEL_OPTIONS.map(opt => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </OLFormControl>
+        </OLFormGroup>
+
+        {/* ── Full Paper Review ── */}
         <div
           style={{
             marginBottom: '16px',
@@ -186,86 +239,191 @@ export default function AiTutorPanel() {
               marginBottom: '8px',
             }}
           >
-            <MaterialIcon type="description" />
-            <strong>Whole Paper Analysis</strong>
+            <MaterialIcon type="rate_review" />
+            <strong>Full Paper Review</strong>
           </span>
           <p
-            style={{ fontSize: '13px', color: '#6c757d', margin: '0 0 8px 0' }}
+            style={{ fontSize: '13px', color: '#333', margin: '0 0 8px 0' }}
           >
-            Analyze your entire project structure. Merges all .tex files in
-            reading order and categorizes project files.
+            Analyzes your project structure, classifies your paper type, then
+            runs parallel reviewers for each section and aspect.
           </p>
+
+          {/* Run Full Review button */}
           <OLButton
-            variant="secondary"
-            onClick={handleWholeProjectAnalysis}
-            disabled={isAnalyzingProject}
-            style={{ width: '100%' }}
+            variant="primary"
+            onClick={handleFullReview}
+            disabled={isReviewing}
+            style={{ width: '100%', marginBottom: '6px' }}
           >
-            {isAnalyzingProject
-              ? 'Analyzing project...'
-              : 'Give Writing Suggestions'}
+            {isReviewing ? 'Reviewing paper...' : 'Run Full Review'}
           </OLButton>
 
-          {analysisInfo && (
+          {reviewProgress && (
             <div
               style={{
-                marginTop: '8px',
                 fontSize: '12px',
-                color: '#495057',
-                padding: '8px',
-                backgroundColor: '#e9ecef',
+                color: '#0d6efd',
+                padding: '6px 8px',
+                backgroundColor: '#e7f1ff',
                 borderRadius: '4px',
-                wordBreak: 'break-word',
+                marginBottom: '6px',
               }}
             >
-              {analysisInfo}
+              {reviewProgress}
             </div>
           )}
 
-          {projectMetadata && (
-            <div style={{ marginTop: '8px', fontSize: '12px' }}>
+          {/* Apply comments */}
+          {reviewResult && (
+            <>
+              <OLButton
+                variant="success"
+                onClick={handleApplyComments}
+                disabled={!currentDocument}
+                style={{ width: '100%', marginBottom: '6px' }}
+              >
+                Apply {reviewResult.summary.total} Comments to Current Document
+              </OLButton>
+              {appliedCount > 0 && (
+                <p
+                  style={{
+                    fontSize: '12px',
+                    color: '#198754',
+                    margin: '0 0 6px 0',
+                  }}
+                >
+                  {appliedCount} comment(s) applied. Switch to another file and
+                  click again to apply remaining comments.
+                </p>
+              )}
+            </>
+          )}
+
+          {/* Review summary */}
+          {reviewResult && (
+            <div style={{ marginTop: '4px', fontSize: '12px' }}>
               <details>
-                <summary style={{ cursor: 'pointer', color: '#495057' }}>
-                  File details
+                <summary style={{ cursor: 'pointer', color: '#222' }}>
+                  Review summary ({reviewResult.summary.total} comments)
+                </summary>
+                <div style={{ padding: '6px 0' }}>
+                  <p style={{ margin: '0 0 4px 0' }}>
+                    <strong>Paper type:</strong>{' '}
+                    {reviewResult.classification.paperType} —{' '}
+                    {reviewResult.classification.paperTypeSummary}
+                  </p>
+                  <p style={{ margin: '0 0 4px 0' }}>
+                    <strong>By category:</strong>
+                  </p>
+                  <ul
+                    style={{
+                      margin: '2px 0 6px 0',
+                      paddingLeft: '18px',
+                    }}
+                  >
+                    {Object.entries(reviewResult.summary.byCategory).map(
+                      ([cat, count]) => (
+                        <li key={cat}>
+                          {cat}: {count as number}
+                        </li>
+                      )
+                    )}
+                  </ul>
+                  <p style={{ margin: '0 0 4px 0' }}>
+                    <strong>By severity:</strong>
+                  </p>
+                  <ul
+                    style={{
+                      margin: '2px 0 6px 0',
+                      paddingLeft: '18px',
+                    }}
+                  >
+                    {Object.entries(reviewResult.summary.bySeverity).map(
+                      ([sev, count]) => (
+                        <li key={sev}>
+                          {sev}: {count as number}
+                        </li>
+                      )
+                    )}
+                  </ul>
+                  <p style={{ margin: '0 0 4px 0' }}>
+                    <strong>Comments by document:</strong>
+                  </p>
+                  <ul
+                    style={{
+                      margin: '2px 0 6px 0',
+                      paddingLeft: '18px',
+                    }}
+                  >
+                    {Object.entries(reviewResult.commentsByDoc).map(
+                      ([docPath, comments]) => (
+                        <li key={docPath}>
+                          {docPath}: {(comments as ReviewComment[]).length}
+                        </li>
+                      )
+                    )}
+                  </ul>
+                  {reviewResult.failedAgents.length > 0 && (
+                    <>
+                      <p
+                        style={{
+                          margin: '0 0 4px 0',
+                          color: '#dc3545',
+                        }}
+                      >
+                        <strong>Skipped agents:</strong>
+                      </p>
+                      <ul
+                        style={{
+                          margin: '2px 0 6px 0',
+                          paddingLeft: '18px',
+                        }}
+                      >
+                        {reviewResult.failedAgents.map(
+                          (a: { id: string; name: string; reason: string }) => (
+                            <li key={a.id}>
+                              {a.name}: {a.reason}
+                            </li>
+                          )
+                        )}
+                      </ul>
+                    </>
+                  )}
+                </div>
+              </details>
+            </div>
+          )}
+
+          {/* File details from analysis metadata */}
+          {projectMetadata && (
+            <div style={{ marginTop: '4px', fontSize: '12px' }}>
+              <details>
+                <summary style={{ cursor: 'pointer', color: '#222' }}>
+                  File details ({projectMetadata.categories.texFiles.count} TeX,{' '}
+                  {projectMetadata.categories.figures.count} figures,{' '}
+                  {projectMetadata.mergedTexLength.toLocaleString()} chars
+                  merged)
                 </summary>
                 <div style={{ padding: '4px 0' }}>
                   <strong>TeX files (merged):</strong>
                   <ul style={{ margin: '2px 0 6px 0', paddingLeft: '18px' }}>
-                    {projectMetadata.categories.texFiles.files.map((f: string) => (
-                      <li key={f}>{f}</li>
-                    ))}
+                    {projectMetadata.categories.texFiles.files.map(
+                      (f: string) => (
+                        <li key={f}>{f}</li>
+                      )
+                    )}
                   </ul>
                   {projectMetadata.categories.figures.count > 0 && (
                     <>
                       <strong>Figures:</strong>
                       <ul
-                        style={{ margin: '2px 0 6px 0', paddingLeft: '18px' }}
+                        style={{
+                          margin: '2px 0 6px 0',
+                          paddingLeft: '18px',
+                        }}
                       >
-                        {projectMetadata.categories.figures.files.map((f: string) => (
-                          <li key={f}>{f}</li>
-                        ))}
-                      </ul>
-                    </>
-                  )}
-                  {projectMetadata.categories.bibFiles.count > 0 && (
-                    <>
-                      <strong>Bib files:</strong>
-                      <ul
-                        style={{ margin: '2px 0 6px 0', paddingLeft: '18px' }}
-                      >
-                        {projectMetadata.categories.bibFiles.files.map((f: string) => (
-                          <li key={f}>{f}</li>
-                        ))}
-                      </ul>
-                    </>
-                  )}
-                  {projectMetadata.categories.usefulFiles.count > 0 && (
-                    <>
-                      <strong>Style/class files:</strong>
-                      <ul
-                        style={{ margin: '2px 0 6px 0', paddingLeft: '18px' }}
-                      >
-                        {projectMetadata.categories.usefulFiles.files.map(
+                        {projectMetadata.categories.figures.files.map(
                           (f: string) => (
                             <li key={f}>{f}</li>
                           )
@@ -273,13 +431,16 @@ export default function AiTutorPanel() {
                       </ul>
                     </>
                   )}
-                  {projectMetadata.categories.irrelevantFiles.count > 0 && (
+                  {projectMetadata.categories.bibFiles.count > 0 && (
                     <>
-                      <strong>Unused files:</strong>
+                      <strong>Bib files:</strong>
                       <ul
-                        style={{ margin: '2px 0 6px 0', paddingLeft: '18px' }}
+                        style={{
+                          margin: '2px 0 6px 0',
+                          paddingLeft: '18px',
+                        }}
                       >
-                        {projectMetadata.categories.irrelevantFiles.files.map(
+                        {projectMetadata.categories.bibFiles.files.map(
                           (f: string) => (
                             <li key={f}>{f}</li>
                           )
@@ -293,51 +454,7 @@ export default function AiTutorPanel() {
           )}
         </div>
 
-        {/* Abstract Analysis Section */}
-        <div style={{ marginBottom: '16px' }}>
-          <span
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px',
-              marginBottom: '8px',
-            }}
-          >
-            <MaterialIcon type="smart_toy" />
-            <strong>Abstract Feedback</strong>
-          </span>
-          <p style={{ fontSize: '13px', color: '#6c757d', margin: 0 }}>
-            Analyze your abstract with AI and get writing suggestions as inline
-            comments.
-          </p>
-        </div>
-
-        <OLFormGroup controlId="ai-tutor-api-key">
-          <OLFormLabel>OpenAI API Key</OLFormLabel>
-          <OLFormControl
-            type="password"
-            placeholder="sk-..."
-            value={apiKey}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-              setApiKey(e.target.value)
-            }
-            disabled={isLoading}
-            required
-          />
-          <small style={{ color: '#6c757d' }}>
-            Your key is only used for this session and is not stored.
-          </small>
-        </OLFormGroup>
-
-        <OLButton
-          variant="primary"
-          onClick={handleAnalyze}
-          disabled={!apiKey.trim() || isLoading}
-          style={{ width: '100%', marginTop: '12px' }}
-        >
-          {isLoading ? 'Analyzing...' : 'Analyze Abstract Only'}
-        </OLButton>
-
+        {/* ── Status messages ── */}
         {error && (
           <div
             className="alert alert-danger"

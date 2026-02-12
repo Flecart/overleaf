@@ -11,6 +11,7 @@ import ProjectGetter from '../Project/ProjectGetter.mjs'
 import DocumentHelper from '../Documents/DocumentHelper.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
+import { runFullReview } from './AiTutorReviewOrchestrator.mjs'
 
 async function sendMessage(req, res) {
   const { project_id: projectId } = req.params
@@ -519,6 +520,268 @@ async function analyzeWholeProject(req, res) {
   res.json(metadata)
 }
 
+async function reviewWholeProject(req, res) {
+  const { project_id: projectId } = req.params
+  const { model = 'gpt-4o' } = req.body
+  const userId = SessionManager.getLoggedInUserId(req.session)
+
+  // Step 1: Run project analysis (always re-analyze for fresh data)
+  console.log('[AI Tutor] reviewWholeProject: running project analysis...')
+
+  const allDocs = await ProjectEntityHandler.promises.getAllDocs(projectId)
+  const allFiles = await ProjectEntityHandler.promises.getAllFiles(projectId)
+  const project = await ProjectGetter.promises.getProject(projectId, {
+    rootDoc_id: 1,
+    name: 1,
+  })
+
+  if (!project) {
+    return res.status(404).json({ error: 'Project not found' })
+  }
+
+  // Find root doc
+  let rootDocPath = null
+  if (project.rootDoc_id) {
+    for (const [docPath, docData] of Object.entries(allDocs)) {
+      if (docData._id.toString() === project.rootDoc_id.toString()) {
+        rootDocPath = docPath
+        break
+      }
+    }
+  }
+  if (!rootDocPath) {
+    for (const [docPath, docData] of Object.entries(allDocs)) {
+      if (docPath.endsWith('.tex') && docData.lines) {
+        const content = Array.isArray(docData.lines)
+          ? docData.lines.join('\n')
+          : docData.lines
+        if (DocumentHelper.contentHasDocumentclass(content)) {
+          rootDocPath = docPath
+          break
+        }
+      }
+    }
+  }
+  if (!rootDocPath) {
+    return res.status(400).json({
+      error: 'Could not find root .tex file with \\documentclass',
+    })
+  }
+
+  // Build docContentMap
+  const docContentMap = {}
+  for (const [docPath, docData] of Object.entries(allDocs)) {
+    const normalized = docPath.startsWith('/') ? docPath.slice(1) : docPath
+    const content = Array.isArray(docData.lines)
+      ? docData.lines.join('\n')
+      : docData.lines || ''
+    docContentMap[normalized] = content
+  }
+
+  // Inline-expand and write merged.tex + metadata.json to cache
+  const texFilesOrdered = []
+  const visitedFiles = new Set()
+  const referencedFigures = new Set()
+  const referencedBibFiles = new Set()
+  const referencedPackages = new Set()
+
+  function resolveDocPath(filePath) {
+    if (docContentMap[filePath] !== undefined) return filePath
+    if (docContentMap[filePath + '.tex'] !== undefined) return filePath + '.tex'
+    return null
+  }
+
+  function extractReferences(content) {
+    let match
+    const graphicsRe = /\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}/g
+    while ((match = graphicsRe.exec(content)) !== null) referencedFigures.add(match[1].trim())
+    const bibRe = /\\(?:bibliography|addbibresource)\{([^}]+)\}/g
+    while ((match = bibRe.exec(content)) !== null) {
+      for (const b of match[1].split(',')) referencedBibFiles.add(b.trim())
+    }
+    const pkgRe = /\\(?:usepackage|RequirePackage)(?:\[[^\]]*\])?\{([^}]+)\}/g
+    while ((match = pkgRe.exec(content)) !== null) {
+      for (const p of match[1].split(',')) referencedPackages.add(p.trim())
+    }
+    const clsRe = /\\documentclass(?:\[[^\]]*\])?\{([^}]+)\}/g
+    while ((match = clsRe.exec(content)) !== null) referencedPackages.add(match[1].trim())
+  }
+
+  function inlineExpand(filePath, basePath) {
+    let resolvedPath = filePath
+    if (basePath && !filePath.startsWith('/')) {
+      const baseDir = basePath.includes('/')
+        ? basePath.substring(0, basePath.lastIndexOf('/'))
+        : ''
+      resolvedPath = baseDir ? baseDir + '/' + filePath : filePath
+    }
+    const actualPath = resolveDocPath(resolvedPath)
+    if (!actualPath || visitedFiles.has(actualPath)) {
+      return `% [AI Tutor] Could not inline: ${filePath} (${!actualPath ? 'not found' : 'already included'})`
+    }
+    visitedFiles.add(actualPath)
+    texFilesOrdered.push(actualPath)
+    const content = docContentMap[actualPath]
+    if (!content) return ''
+    extractReferences(content)
+    return content.replace(
+      /\\(?:input|include)\{([^}]+)\}/g,
+      (_match, includedFile) => {
+        const trimmed = includedFile.trim()
+        return (
+          `% ========== INLINED FROM: ${trimmed} ==========\n` +
+          inlineExpand(trimmed, actualPath) +
+          `\n% ========== END OF: ${trimmed} ==========`
+        )
+      }
+    )
+  }
+
+  const normalizedRootPath = rootDocPath.startsWith('/')
+    ? rootDocPath.slice(1)
+    : rootDocPath
+  const mergedTexContent = inlineExpand(normalizedRootPath, '')
+
+  // Categorize files
+  const allDocPaths = Object.keys(allDocs).map(p => p.startsWith('/') ? p.slice(1) : p)
+  const allFilePaths = Object.keys(allFiles).map(p => p.startsWith('/') ? p.slice(1) : p)
+  const figureFiles = allFilePaths.filter(fp => {
+    const noExt = fp.replace(/\.[^.]+$/, '')
+    return [...referencedFigures].some(ref => {
+      const refNoExt = ref.replace(/\.[^.]+$/, '')
+      return fp === ref || fp.endsWith('/' + ref) || noExt === refNoExt || noExt.endsWith('/' + refNoExt)
+    })
+  })
+  const bibFiles = [...allDocPaths, ...allFilePaths].filter(p => {
+    if (!p.endsWith('.bib')) return false
+    const noExt = p.replace(/\.bib$/, '')
+    return [...referencedBibFiles].some(ref => {
+      const refNoExt = ref.replace(/\.bib$/, '')
+      return p === ref || p === ref + '.bib' || noExt === refNoExt || noExt.endsWith('/' + refNoExt)
+    })
+  })
+  const usefulExts = ['.sty', '.cls', '.bst', '.def', '.cfg', '.clo', '.fd']
+  const usefulFiles = [...allDocPaths, ...allFilePaths].filter(p =>
+    usefulExts.some(ext => p.endsWith(ext)) && !texFilesOrdered.includes(p) && !bibFiles.includes(p) && !figureFiles.includes(p)
+  )
+  const categorized = new Set([...texFilesOrdered, ...figureFiles, ...bibFiles, ...usefulFiles])
+  const irrelevantFiles = [...allDocPaths, ...allFilePaths].filter(p => !categorized.has(p))
+
+  // Write cache
+  const cacheDir = path.join('/var/lib/overleaf/ai-tutor-cache', projectId)
+  if (!fs.existsSync(cacheDir)) fs.mkdirSync(cacheDir, { recursive: true })
+  fs.writeFileSync(path.join(cacheDir, 'merged.tex'), mergedTexContent, 'utf-8')
+
+  const metadata = {
+    projectId,
+    projectName: project.name || '',
+    rootDocPath: normalizedRootPath,
+    analyzedAt: new Date().toISOString(),
+    categories: {
+      texFiles: { files: texFilesOrdered, count: texFilesOrdered.length },
+      figures: { files: figureFiles, references: Array.from(referencedFigures), count: figureFiles.length },
+      bibFiles: { files: bibFiles, references: Array.from(referencedBibFiles), count: bibFiles.length },
+      usefulFiles: { files: usefulFiles, count: usefulFiles.length },
+      irrelevantFiles: { files: irrelevantFiles, count: irrelevantFiles.length },
+    },
+    mergedTexLength: mergedTexContent.length,
+    totalDocs: allDocPaths.length,
+    totalFiles: allFilePaths.length,
+  }
+  fs.writeFileSync(path.join(cacheDir, 'metadata.json'), JSON.stringify(metadata, null, 2), 'utf-8')
+  console.log(`[AI Tutor] Project analysis complete: ${texFilesOrdered.length} tex files, ${mergedTexContent.length} chars merged`)
+
+  // Step 2: Run multi-agent review
+  try {
+    const result = await runFullReview({
+      projectId,
+      model,
+      cacheDir,
+      docContentMap,
+      rootDocPath: normalizedRootPath,
+    })
+    // Attach metadata to the response so frontend can display file info
+    result.metadata = metadata
+
+    // Log review results to JSONL
+    try {
+      const logDir = '/var/lib/overleaf/ai-tutor-logs'
+      if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true })
+      const date = new Date().toISOString().split('T')[0]
+      const logFile = path.join(logDir, `ai-tutor-${date}.jsonl`)
+
+      // Flatten all comments from all docs
+      const allComments = Object.values(result.commentsByDoc).flat()
+
+      const logEntry = {
+        timestamp: new Date().toISOString(),
+        type: 'full_review',
+        projectId,
+        userId: userId.toString(),
+        model,
+        paperType: result.classification.paperType,
+        paperTypeSummary: result.classification.paperTypeSummary,
+        summary: result.summary,
+        failedAgents: result.failedAgents,
+        comments: allComments.map(c => ({
+          highlightText: c.highlightText,
+          comment: c.comment,
+          severity: c.severity,
+          category: c.category,
+          agentName: c.agentName,
+          docPath: c.docPath,
+        })),
+      }
+      fs.appendFileSync(logFile, JSON.stringify(logEntry) + '\n')
+    } catch (logErr) {
+      console.warn('[AI Tutor] Failed to write JSONL log:', logErr.message)
+    }
+
+    res.json(result)
+  } catch (err) {
+    console.error('[AI Tutor] Review failed:', err)
+    res.status(500).json({ error: err.message })
+  }
+}
+
+async function deleteAiTutorComments(req, res) {
+  const { project_id: projectId } = req.params
+
+  try {
+    // 1. Fetch all threads for this project
+    const threads = await ChatApiHandler.promises.getThreads(projectId)
+
+    // 2. Find threads whose first message starts with [AI Tutor]
+    const aiTutorThreadIds = []
+    for (const [threadId, thread] of Object.entries(threads)) {
+      if (thread.messages && thread.messages.length > 0) {
+        const firstMsg = thread.messages[0].content || ''
+        if (firstMsg.startsWith('[AI Tutor]')) {
+          aiTutorThreadIds.push(threadId)
+        }
+      }
+    }
+
+    if (aiTutorThreadIds.length === 0) {
+      return res.json({ deleted: 0 })
+    }
+
+    // 3. Delete each AI Tutor thread and emit socket events
+    for (const threadId of aiTutorThreadIds) {
+      await ChatApiHandler.promises.deleteThread(projectId, threadId)
+      EditorRealTimeController.emitToRoom(projectId, 'delete-thread', threadId)
+    }
+
+    console.log(
+      `[AI Tutor] Deleted ${aiTutorThreadIds.length} AI Tutor comment threads from project ${projectId}`
+    )
+    res.json({ deleted: aiTutorThreadIds.length })
+  } catch (err) {
+    console.error('[AI Tutor] Failed to delete comments:', err)
+    res.status(500).json({ error: err.message })
+  }
+}
+
 export default {
   sendMessage: expressify(sendMessage),
   getMessages: expressify(getMessages),
@@ -533,4 +796,6 @@ export default {
   deleteThread: expressify(deleteThread),
   logAITutorSuggestions: expressify(logAITutorSuggestions),
   analyzeWholeProject: expressify(analyzeWholeProject),
+  reviewWholeProject: expressify(reviewWholeProject),
+  deleteAiTutorComments: expressify(deleteAiTutorComments),
 }
