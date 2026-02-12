@@ -900,13 +900,18 @@ Do NOT produce:
 
 Every comment should answer the question: "What should the author *do* to make this part of the paper stronger?"
 
-Produce at most 20 comments. Prefer fewer, deeper comments over many shallow ones.
+Produce at most 10 comments. Prioritize fewer, deeper comments over many shallow ones. Label each comment as one of:  
+[suggestion] (nice to have),  
+[warning] (should fix), or  
+[critical] (must fix).  
+
+Avoid including too many low impact [suggestion] comments. If there are only a few meaningful issues, generate fewer comments.
 
 ## Writing Skills Reference
 ${skillContent}
 ${guidanceInjection}`
 
-  const userPrompt = `Review the following LaTeX text. For each comment, identify a specific passage that could be strengthened and provide either a concrete suggestion for improvement or a concern the author needs to address:\n\n${reviewText}`
+  const userPrompt = `Review the following LaTeX text and provide your comments:\n\n${reviewText}`
 
   // Build log-friendly versions: full template but skill content and review text previewed
   const logSystemPrompt = `You are the "${def.name}" for an academic paper writing tutor.
@@ -928,7 +933,12 @@ Do NOT produce:
 
 Every comment should answer the question: "What should the author *do* to make this part of the paper stronger?"
 
-Produce at most 20 comments. Prefer fewer, deeper comments over many shallow ones.
+Produce at most 10 comments. Prioritize fewer, deeper comments over many shallow ones. Label each comment as one of:  
+[suggestion] (nice to have),  
+[warning] (should fix), or  
+[critical] (must fix).  
+
+Avoid including too many low impact [suggestion] comments. If there are only a few meaningful issues, generate fewer comments.
 
 ## Writing Skills Reference
 ${previewText(skillContent)}
@@ -1427,12 +1437,12 @@ export async function runFullReview({
     `Mapped ${mappedComments.length}/${allComments.length} comments to original documents`
   )
 
-  // Prefix all comments with [AI Tutor] [severity]
+  // Prefix all comments with [AI Tutor] [severity] [agent]
   for (const c of mappedComments)
   {
     if (!c.comment.startsWith('[AI Tutor]'))
     {
-      c.comment = `[AI Tutor] [${c.severity}] ${c.comment}`
+      c.comment = `[AI Tutor] [${c.severity}] [${c.agentName}] ${c.comment}`
     }
   }
 

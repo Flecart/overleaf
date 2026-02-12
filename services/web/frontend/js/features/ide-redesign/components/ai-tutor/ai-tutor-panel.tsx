@@ -20,10 +20,12 @@ import OLFormLabel from '@/shared/components/ol/ol-form-label'
 import MaterialIcon from '@/shared/components/material-icon'
 
 const MODEL_OPTIONS = [
-  { value: 'gpt-4o', label: 'GPT-4o (Best quality)' },
-  { value: 'gpt-4o-mini', label: 'GPT-4o Mini (Faster, cheaper)' },
+  { value: 'gpt-4o', label: 'GPT-4o' },
+  { value: 'gpt-4o-mini', label: 'GPT-4o Mini' },
   { value: 'gpt-4.1', label: 'GPT-4.1' },
   { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini' },
+  { value: 'gpt-5.2', label: 'GPT-5.2' },
+  { value: 'gpt-5.2-chat-latest', label: 'GPT-5.2 Chat' },
 ]
 
 export default function AiTutorPanel() {
@@ -58,10 +60,12 @@ export default function AiTutorPanel() {
     setReviewResult(null)
     setAppliedCount(0)
 
-    try {
+    try
+    {
       const result = await runFullReview(projectId, selectedModel)
 
-      if (!result.success) {
+      if (!result.success)
+      {
         setError(result.error || 'Review failed.')
         setIsReviewing(false)
         setReviewProgress(null)
@@ -78,15 +82,17 @@ export default function AiTutorPanel() {
           : ''
       setSuccessMessage(
         `Review complete! ${r.summary.total} comments from ${Object.keys(r.summary.byCategory).length} reviewers.` +
-          ` Paper type: ${r.classification.paperType}.${failedNote}`
+        ` Paper type: ${r.classification.paperType}.${failedNote}`
       )
-    } catch (err) {
+    } catch (err)
+    {
       console.error('[AI Tutor] Full review error:', err)
       setError(
         err instanceof Error ? err.message : 'An unexpected error occurred.'
       )
       setReviewProgress(null)
-    } finally {
+    } finally
+    {
       setIsReviewing(false)
     }
   }, [projectId, selectedModel])
@@ -95,7 +101,8 @@ export default function AiTutorPanel() {
   // Apply review comments to currently open document
   // -----------------------------------------------------------------------
   const handleApplyComments = useCallback(async () => {
-    if (!reviewResult || !currentDocument) {
+    if (!reviewResult || !currentDocument)
+    {
       setError('No review results or no document open.')
       return
     }
@@ -104,7 +111,8 @@ export default function AiTutorPanel() {
     setSuccessMessage(null)
 
     const snapshot = currentDocument.getSnapshot()
-    if (!snapshot) {
+    if (!snapshot)
+    {
       setError('Cannot read current document content.')
       return
     }
@@ -118,15 +126,18 @@ export default function AiTutorPanel() {
     let applied = 0
     let skipped = 0
 
-    for (const comment of allComments) {
+    for (const comment of allComments)
+    {
       // Search for the highlightText in the current document snapshot
       const idx = snapshot.indexOf(comment.highlightText)
-      if (idx === -1) {
+      if (idx === -1)
+      {
         skipped++
         continue
       }
 
-      try {
+      try
+      {
         const threadId = RangesTracker.generateId() as ThreadId
 
         await postJSON(`/project/${projectId}/thread/${threadId}/messages`, {
@@ -141,7 +152,8 @@ export default function AiTutorPanel() {
 
         currentDocument.submitOp(op)
         applied++
-      } catch (err) {
+      } catch (err)
+      {
         console.warn('[AI Tutor] Failed to apply comment:', err)
         skipped++
       }
@@ -150,9 +162,9 @@ export default function AiTutorPanel() {
     setAppliedCount(applied)
     setSuccessMessage(
       `Applied ${applied} comment(s) to current document.` +
-        (skipped > 0
-          ? ` ${skipped} comment(s) didn't match this document (they belong to other files).`
-          : '')
+      (skipped > 0
+        ? ` ${skipped} comment(s) didn't match this document (they belong to other files).`
+        : '')
     )
   }, [reviewResult, currentDocument, projectId])
 
@@ -164,21 +176,26 @@ export default function AiTutorPanel() {
     setError(null)
     setSuccessMessage(null)
 
-    try {
+    try
+    {
       const result = await deleteAiTutorComments(projectId)
-      if (result.deleted > 0) {
+      if (result.deleted > 0)
+      {
         setSuccessMessage(
           `Deleted ${result.deleted} AI Tutor comment(s). Refresh the page to see changes.`
         )
-      } else {
+      } else
+      {
         setSuccessMessage('No AI Tutor comments found to delete.')
       }
-    } catch (err) {
+    } catch (err)
+    {
       console.error('[AI Tutor] Delete comments error:', err)
       setError(
         err instanceof Error ? err.message : 'Failed to delete comments.'
       )
-    } finally {
+    } finally
+    {
       setIsDeleting(false)
     }
   }, [projectId])

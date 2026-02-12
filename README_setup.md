@@ -176,3 +176,18 @@ docker compose exec clsi bash -c "rm -rf /overleaf/services/clsi/compiles/*/outp
 ```
 
 Then recompile your project in the browser.
+
+
+## Check logs
+
+```bash
+cd develop/
+docker compose logs web
+```
+
+## Restart
+
+```bash
+cd develop/
+docker compose restart web
+```
