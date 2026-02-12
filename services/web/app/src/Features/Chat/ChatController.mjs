@@ -330,7 +330,9 @@ async function analyzeWholeProject(req, res) {
   // Recursively expand \input{} and \include{} inline, replacing each
   // command with the actual content of the referenced file.
   function inlineExpand(filePath, basePath) {
-    // Resolve relative path based on the parent file's directory
+    // Try resolving relative to the parent file's directory first,
+    // then fall back to the project root. This mirrors TeX's TEXINPUTS
+    // behavior where \input paths are searched in multiple locations.
     let resolvedPath = filePath
     if (basePath && !filePath.startsWith('/')) {
       const baseDir = basePath.includes('/')
@@ -339,7 +341,11 @@ async function analyzeWholeProject(req, res) {
       resolvedPath = baseDir ? baseDir + '/' + filePath : filePath
     }
 
-    const actualPath = resolveDocPath(resolvedPath)
+    // Try resolved path (relative to parent), then original path (relative to project root)
+    let actualPath = resolveDocPath(resolvedPath)
+    if (!actualPath && resolvedPath !== filePath) {
+      actualPath = resolveDocPath(filePath)
+    }
     if (!actualPath || visitedFiles.has(actualPath)) {
       // Cycle or missing file: leave a comment marker
       return `% [AI Tutor] Could not inline: ${filePath} (${!actualPath ? 'not found' : 'already included'})`
@@ -608,6 +614,8 @@ async function reviewWholeProject(req, res) {
   }
 
   function inlineExpand(filePath, basePath) {
+    // Try resolving relative to the parent file's directory first,
+    // then fall back to the project root (mirrors TeX TEXINPUTS behavior)
     let resolvedPath = filePath
     if (basePath && !filePath.startsWith('/')) {
       const baseDir = basePath.includes('/')
@@ -615,7 +623,10 @@ async function reviewWholeProject(req, res) {
         : ''
       resolvedPath = baseDir ? baseDir + '/' + filePath : filePath
     }
-    const actualPath = resolveDocPath(resolvedPath)
+    let actualPath = resolveDocPath(resolvedPath)
+    if (!actualPath && resolvedPath !== filePath) {
+      actualPath = resolveDocPath(filePath)
+    }
     if (!actualPath || visitedFiles.has(actualPath)) {
       return `% [AI Tutor] Could not inline: ${filePath} (${!actualPath ? 'not found' : 'already included'})`
     }
@@ -702,6 +713,14 @@ async function reviewWholeProject(req, res) {
     })
     // Attach metadata to the response so frontend can display file info
     result.metadata = metadata
+
+    // Build docPath -> docId mapping so frontend can open the correct document
+    const docPathToId = {}
+    for (const [docPath, docData] of Object.entries(allDocs)) {
+      const normalized = docPath.startsWith('/') ? docPath.slice(1) : docPath
+      docPathToId[normalized] = docData._id.toString()
+    }
+    result.docPathToId = docPathToId
 
     // Log review results to JSONL
     try {

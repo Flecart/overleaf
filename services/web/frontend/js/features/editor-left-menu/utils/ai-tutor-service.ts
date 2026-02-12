@@ -47,6 +47,7 @@ export interface ReviewResult {
     paperTypeSummary: string
   }
   commentsByDoc: Record<string, ReviewComment[]>
+  docPathToId: Record<string, string>
   summary: {
     total: number
     byCategory: Record<string, number>

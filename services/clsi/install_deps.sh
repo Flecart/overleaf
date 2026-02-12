@@ -3,9 +3,20 @@ set -ex
 
 apt-get update
 
-apt-get install -y \
+DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Options::="--force-confold" \
   poppler-utils \
   ghostscript \
+  latexmk \
+  texlive-base \
+  texlive-binaries \
+  texlive-latex-base \
+  texlive-latex-recommended \
+  texlive-latex-extra \
+  texlive-fonts-recommended \
+  texlive-fonts-extra \
+  texlive-science \
+  texlive-pictures \
+  texlive-plain-generic \
 
 rm -rf /var/lib/apt/lists/*
 

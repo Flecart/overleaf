@@ -1,6 +1,7 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import RailPanelHeader from '@/features/ide-react/components/rail/rail-panel-header'
 import { useEditorOpenDocContext } from '@/features/ide-react/context/editor-open-doc-context'
+import { useEditorManagerContext } from '@/features/ide-react/context/editor-manager-context'
 import { useProjectContext } from '@/shared/context/project-context'
 import { postJSON } from '@/infrastructure/fetch-json'
 import RangesTracker from '@overleaf/ranges-tracker'
@@ -28,6 +29,13 @@ const MODEL_OPTIONS = [
   { value: 'gpt-5.2-chat-latest', label: 'GPT-5.2 Chat' },
 ]
 
+interface CommentQueue {
+  entries: Array<{ docPath: string; docId: string; comments: ReviewComment[] }>
+  currentIndex: number
+  totalApplied: number
+  totalSkipped: number
+}
+
 export default function AiTutorPanel() {
   const [error, setError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
@@ -44,8 +52,96 @@ export default function AiTutorPanel() {
   const [reviewProgress, setReviewProgress] = useState<string | null>(null)
   const [appliedCount, setAppliedCount] = useState(0)
 
-  const { currentDocument } = useEditorOpenDocContext()
+  // Auto-apply state
+  const [isApplying, setIsApplying] = useState(false)
+  const [applyProgress, setApplyProgress] = useState<string | null>(null)
+  const commentQueueRef = useRef<CommentQueue | null>(null)
+  const applyTriggerRef = useRef(0)
+  const [applyTrigger, setApplyTrigger] = useState(0)
+
+  const { currentDocument, currentDocumentId } = useEditorOpenDocContext()
+  const { openDocWithId } = useEditorManagerContext()
   const { projectId } = useProjectContext()
+
+  // -----------------------------------------------------------------------
+  // Effect: when currentDocument changes during auto-apply, process next batch
+  // -----------------------------------------------------------------------
+  useEffect(() => {
+    const queue = commentQueueRef.current
+    if (!queue || !currentDocument || !currentDocumentId) return
+
+    const entry = queue.entries[queue.currentIndex]
+    if (!entry) return
+
+    // Verify the expected document is fully loaded (both ID and container must match)
+    // currentDocumentId updates before currentDocument during doc switching,
+    // so we must also check currentDocument.doc_id to avoid using stale content
+    if (entry.docId !== currentDocumentId) return
+    if (currentDocument.doc_id !== currentDocumentId) return
+
+    const snapshot = currentDocument.getSnapshot()
+    if (!snapshot) return
+
+    const applyBatch = async () => {
+      let applied = 0
+      let skipped = 0
+
+      for (const comment of entry.comments) {
+        const idx = snapshot.indexOf(comment.highlightText)
+        if (idx === -1) {
+          skipped++
+          continue
+        }
+
+        try {
+          const threadId = RangesTracker.generateId() as ThreadId
+          await postJSON(`/project/${projectId}/thread/${threadId}/messages`, {
+            body: { content: comment.comment },
+          })
+          const op: CommentOperation = {
+            c: comment.highlightText,
+            p: idx,
+            t: threadId,
+          }
+          currentDocument.submitOp(op)
+          applied++
+        } catch (err) {
+          console.warn('[AI Tutor] Failed to apply comment:', err)
+          skipped++
+        }
+      }
+
+      queue.totalApplied += applied
+      queue.totalSkipped += skipped
+      queue.currentIndex++
+
+      // Process next document or finish
+      if (queue.currentIndex < queue.entries.length) {
+        const next = queue.entries[queue.currentIndex]
+        setApplyProgress(
+          `Applying comments... ${queue.totalApplied} applied, ` +
+          `processing ${next.docPath} (${queue.currentIndex + 1}/${queue.entries.length})`
+        )
+        openDocWithId(next.docId)
+      } else {
+        // All done
+        const filesProcessed = queue.entries.length
+        setIsApplying(false)
+        setAppliedCount(queue.totalApplied)
+        setApplyProgress(null)
+        setSuccessMessage(
+          `Applied ${queue.totalApplied} comment(s) across ${filesProcessed} file(s).` +
+          (queue.totalSkipped > 0
+            ? ` ${queue.totalSkipped} comment(s) could not be matched.`
+            : '')
+        )
+        commentQueueRef.current = null
+      }
+    }
+
+    applyBatch()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentDocument, currentDocumentId, applyTrigger])
 
   // -----------------------------------------------------------------------
   // Run full review (analyzes project + runs multi-agent review in one call)
@@ -60,12 +156,10 @@ export default function AiTutorPanel() {
     setReviewResult(null)
     setAppliedCount(0)
 
-    try
-    {
+    try {
       const result = await runFullReview(projectId, selectedModel)
 
-      if (!result.success)
-      {
+      if (!result.success) {
         setError(result.error || 'Review failed.')
         setIsReviewing(false)
         setReviewProgress(null)
@@ -84,89 +178,68 @@ export default function AiTutorPanel() {
         `Review complete! ${r.summary.total} comments from ${Object.keys(r.summary.byCategory).length} reviewers.` +
         ` Paper type: ${r.classification.paperType}.${failedNote}`
       )
-    } catch (err)
-    {
+    } catch (err) {
       console.error('[AI Tutor] Full review error:', err)
       setError(
         err instanceof Error ? err.message : 'An unexpected error occurred.'
       )
       setReviewProgress(null)
-    } finally
-    {
+    } finally {
       setIsReviewing(false)
     }
   }, [projectId, selectedModel])
 
   // -----------------------------------------------------------------------
-  // Apply review comments to currently open document
+  // Apply review comments across all documents automatically
   // -----------------------------------------------------------------------
-  const handleApplyComments = useCallback(async () => {
-    if (!reviewResult || !currentDocument)
-    {
-      setError('No review results or no document open.')
+  const handleApplyComments = useCallback(() => {
+    if (!reviewResult) {
+      setError('No review results available.')
       return
     }
 
+    const docPathToId = reviewResult.docPathToId || {}
+
+    // Build a queue of (docPath, docId, comments) entries
+    const entries: CommentQueue['entries'] = []
+    for (const [docPath, comments] of Object.entries(reviewResult.commentsByDoc)) {
+      const docId = docPathToId[docPath]
+      if (docId && (comments as ReviewComment[]).length > 0) {
+        entries.push({ docPath, docId, comments: comments as ReviewComment[] })
+      }
+    }
+
+    if (entries.length === 0) {
+      setError('No comments could be mapped to documents.')
+      return
+    }
+
+    // Initialize the queue
+    commentQueueRef.current = {
+      entries,
+      currentIndex: 0,
+      totalApplied: 0,
+      totalSkipped: 0,
+    }
+
+    setIsApplying(true)
+    setAppliedCount(0)
     setError(null)
     setSuccessMessage(null)
-
-    const snapshot = currentDocument.getSnapshot()
-    if (!snapshot)
-    {
-      setError('Cannot read current document content.')
-      return
-    }
-
-    // Collect ALL comments from every doc group and try to match them
-    // against the currently open document via text search
-    const allComments = Object.values(
-      reviewResult.commentsByDoc
-    ).flat() as ReviewComment[]
-
-    let applied = 0
-    let skipped = 0
-
-    for (const comment of allComments)
-    {
-      // Search for the highlightText in the current document snapshot
-      const idx = snapshot.indexOf(comment.highlightText)
-      if (idx === -1)
-      {
-        skipped++
-        continue
-      }
-
-      try
-      {
-        const threadId = RangesTracker.generateId() as ThreadId
-
-        await postJSON(`/project/${projectId}/thread/${threadId}/messages`, {
-          body: { content: comment.comment },
-        })
-
-        const op: CommentOperation = {
-          c: comment.highlightText,
-          p: idx,
-          t: threadId,
-        }
-
-        currentDocument.submitOp(op)
-        applied++
-      } catch (err)
-      {
-        console.warn('[AI Tutor] Failed to apply comment:', err)
-        skipped++
-      }
-    }
-
-    setAppliedCount(applied)
-    setSuccessMessage(
-      `Applied ${applied} comment(s) to current document.` +
-      (skipped > 0
-        ? ` ${skipped} comment(s) didn't match this document (they belong to other files).`
-        : '')
+    setApplyProgress(
+      `Applying comments... processing ${entries[0].docPath} (1/${entries.length})`
     )
-  }, [reviewResult, currentDocument, projectId])
+
+    // Open the first document (or trigger if already open)
+    const firstDocId = entries[0].docId
+    if (currentDocumentId === firstDocId) {
+      // Document is already open — trigger the effect manually
+      applyTriggerRef.current++
+      setApplyTrigger(applyTriggerRef.current)
+    } else {
+      openDocWithId(firstDocId)
+    }
+  }, [reviewResult, currentDocumentId, openDocWithId])
 
   // -----------------------------------------------------------------------
   // Delete all AI Tutor comments
@@ -176,26 +249,21 @@ export default function AiTutorPanel() {
     setError(null)
     setSuccessMessage(null)
 
-    try
-    {
+    try {
       const result = await deleteAiTutorComments(projectId)
-      if (result.deleted > 0)
-      {
+      if (result.deleted > 0) {
         setSuccessMessage(
           `Deleted ${result.deleted} AI Tutor comment(s). Refresh the page to see changes.`
         )
-      } else
-      {
+      } else {
         setSuccessMessage('No AI Tutor comments found to delete.')
       }
-    } catch (err)
-    {
+    } catch (err) {
       console.error('[AI Tutor] Delete comments error:', err)
       setError(
         err instanceof Error ? err.message : 'Failed to delete comments.'
       )
-    } finally
-    {
+    } finally {
       setIsDeleting(false)
     }
   }, [projectId])
@@ -213,7 +281,7 @@ export default function AiTutorPanel() {
           variant="danger"
           size="sm"
           onClick={handleDeleteComments}
-          disabled={isDeleting || isReviewing}
+          disabled={isDeleting || isReviewing || isApplying}
           style={{ width: '100%', marginBottom: '12px' }}
         >
           {isDeleting ? 'Deleting...' : 'Delete All AI Tutor Comments'}
@@ -228,7 +296,7 @@ export default function AiTutorPanel() {
             onChange={(e: React.ChangeEvent<HTMLSelectElement>) =>
               setSelectedModel(e.target.value)
             }
-            disabled={isReviewing}
+            disabled={isReviewing || isApplying}
           >
             {MODEL_OPTIONS.map(opt => (
               <option key={opt.value} value={opt.value}>
@@ -270,7 +338,7 @@ export default function AiTutorPanel() {
           <OLButton
             variant="primary"
             onClick={handleFullReview}
-            disabled={isReviewing}
+            disabled={isReviewing || isApplying}
             style={{ width: '100%', marginBottom: '6px' }}
           >
             {isReviewing ? 'Reviewing paper...' : 'Run Full Review'}
@@ -297,12 +365,28 @@ export default function AiTutorPanel() {
               <OLButton
                 variant="success"
                 onClick={handleApplyComments}
-                disabled={!currentDocument}
+                disabled={isApplying}
                 style={{ width: '100%', marginBottom: '6px' }}
               >
-                Apply {reviewResult.summary.total} Comments to Current Document
+                {isApplying
+                  ? 'Applying comments...'
+                  : `Apply ${reviewResult.summary.total} Comments to All Files`}
               </OLButton>
-              {appliedCount > 0 && (
+              {applyProgress && (
+                <div
+                  style={{
+                    fontSize: '12px',
+                    color: '#0d6efd',
+                    padding: '6px 8px',
+                    backgroundColor: '#e7f1ff',
+                    borderRadius: '4px',
+                    marginBottom: '6px',
+                  }}
+                >
+                  {applyProgress}
+                </div>
+              )}
+              {appliedCount > 0 && !isApplying && (
                 <p
                   style={{
                     fontSize: '12px',
@@ -310,8 +394,7 @@ export default function AiTutorPanel() {
                     margin: '0 0 6px 0',
                   }}
                 >
-                  {appliedCount} comment(s) applied. Switch to another file and
-                  click again to apply remaining comments.
+                  {appliedCount} comment(s) applied across all files.
                 </p>
               )}
             </>

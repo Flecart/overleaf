@@ -40,6 +40,9 @@ const settings = {
     // gcs - Google Cloud Storage
     backend: process.env.BACKEND,
 
+    // Use subdirectory structure for fs backend (preserves path separators in keys)
+    useSubdirectories: process.env.USE_SUBDIRECTORIES !== 'false',
+
     gcs: {
       endpoint: process.env.GCS_API_ENDPOINT
         ? {
