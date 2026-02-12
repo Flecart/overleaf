@@ -21,6 +21,11 @@ const SKILLS_DIR = path.join(__dirname, 'ai-tutor-skills')
 // Set AI_TUTOR_LOG_PROMPTS=true in .env to log full LLM prompts and responses
 const LOG_PROMPTS = process.env.AI_TUTOR_LOG_PROMPTS === 'true'
 
+// Fuzzy matching threshold (0.0–1.0). Higher = stricter. Default 0.85.
+// Set AI_TUTOR_FUZZY_THRESHOLD in .env to override.
+const FUZZY_THRESHOLD_ENV = parseFloat(process.env.AI_TUTOR_FUZZY_THRESHOLD)
+const FUZZY_THRESHOLD_DEFAULT = 0.85
+
 // ---------------------------------------------------------------------------
 // Skill loader
 // ---------------------------------------------------------------------------
@@ -127,6 +132,194 @@ function repairJsonEscapedLatex(text)
     .replace(/\x0C/g, '\\f')   // form feed → \f  (e.g. \frac, \figure, \footnote)
     .replace(/\t/g, '\\t')     // tab       → \t  (e.g. \textit, \textbf, \table)
     .replace(/\r/g, '\\r')     // CR        → \r  (e.g. \ref, \renewcommand)
+}
+
+// ---------------------------------------------------------------------------
+// Fuzzy matching utilities
+// ---------------------------------------------------------------------------
+
+const FUZZY_THRESHOLD = Number.isFinite(FUZZY_THRESHOLD_ENV) ? FUZZY_THRESHOLD_ENV : FUZZY_THRESHOLD_DEFAULT
+
+/**
+ * Normalize whitespace: collapse runs of whitespace into a single space, trim.
+ */
+function normalizeWhitespace(str)
+{
+  return str.replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * Build a whitespace-normalized version of a string together with a
+ * position map (normalizedIndex → originalIndex) so we can translate
+ * match positions back to the original text.
+ */
+function normalizeWithPosMap(str)
+{
+  let normalized = ''
+  const posMap = []
+  let prevWasSpace = true // treat start as after space to trim leading whitespace
+
+  for (let i = 0; i < str.length; i++)
+  {
+    const ch = str[i]
+    if (/\s/.test(ch))
+    {
+      if (!prevWasSpace && normalized.length > 0)
+      {
+        normalized += ' '
+        posMap.push(i)
+        prevWasSpace = true
+      }
+    }
+    else
+    {
+      normalized += ch
+      posMap.push(i)
+      prevWasSpace = false
+    }
+  }
+
+  // Trim trailing space
+  if (normalized.endsWith(' '))
+  {
+    normalized = normalized.slice(0, -1)
+    posMap.pop()
+  }
+
+  return { text: normalized, posMap }
+}
+
+/**
+ * Compute Dice coefficient (bigram similarity) between two strings.
+ * Returns a value between 0.0 and 1.0.
+ */
+function diceCoefficient(a, b)
+{
+  if (a === b) return 1.0
+  if (a.length < 2 || b.length < 2) return 0.0
+
+  const bigramsA = new Map()
+  for (let i = 0; i < a.length - 1; i++)
+  {
+    const bg = a.slice(i, i + 2)
+    bigramsA.set(bg, (bigramsA.get(bg) || 0) + 1)
+  }
+
+  const bigramsB = new Map()
+  for (let i = 0; i < b.length - 1; i++)
+  {
+    const bg = b.slice(i, i + 2)
+    bigramsB.set(bg, (bigramsB.get(bg) || 0) + 1)
+  }
+
+  let intersection = 0
+  for (const [bg, countA] of bigramsA)
+  {
+    intersection += Math.min(countA, bigramsB.get(bg) || 0)
+  }
+
+  return (2.0 * intersection) / ((a.length - 1) + (b.length - 1))
+}
+
+/**
+ * Find the best fuzzy substring match of `needle` in `haystack`.
+ *
+ * Strategy:
+ *  1. Fast path — whitespace-normalized exact match
+ *  2. Sliding window with bigram Dice coefficient on normalized text
+ *  3. Refinement pass (step=1) around the best coarse match
+ *
+ * Returns { index, length, matchedText, similarity } in ORIGINAL
+ * haystack coordinates, or null if no match meets the threshold.
+ */
+function fuzzyFindInText(needle, haystack, threshold = FUZZY_THRESHOLD)
+{
+  if (!needle || needle.length < 5 || !haystack || haystack.length < needle.length * 0.5)
+  {
+    return null
+  }
+
+  const normNeedle = normalizeWhitespace(needle)
+  const { text: normHaystack, posMap } = normalizeWithPosMap(haystack)
+
+  if (normNeedle.length < 2 || normHaystack.length < normNeedle.length * 0.5)
+  {
+    return null
+  }
+
+  // Fast path: whitespace-normalized exact match
+  const exactIdx = normHaystack.indexOf(normNeedle)
+  if (exactIdx !== -1)
+  {
+    const origStart = posMap[exactIdx]
+    const origEndIdx = Math.min(exactIdx + normNeedle.length - 1, posMap.length - 1)
+    const origEnd = posMap[origEndIdx] + 1
+    return {
+      index: origStart,
+      length: origEnd - origStart,
+      matchedText: haystack.substring(origStart, origEnd),
+      similarity: 1.0,
+    }
+  }
+
+  // Sliding window on normalized text
+  const needleLen = normNeedle.length
+  const windowSizes = [
+    needleLen,
+    Math.floor(needleLen * 0.9),
+    Math.ceil(needleLen * 1.1),
+    Math.floor(needleLen * 0.8),
+    Math.ceil(needleLen * 1.2),
+  ]
+  const minWindow = Math.min(...windowSizes)
+  const step = Math.max(1, Math.floor(needleLen / 6))
+
+  let best = null
+
+  for (let pos = 0; pos <= normHaystack.length - minWindow; pos += step)
+  {
+    for (const wLen of windowSizes)
+    {
+      if (pos + wLen > normHaystack.length) continue
+      const candidate = normHaystack.substring(pos, pos + wLen)
+      const sim = diceCoefficient(normNeedle, candidate)
+      if (sim >= threshold && (!best || sim > best.similarity))
+      {
+        best = { normIndex: pos, normLen: wLen, similarity: sim }
+      }
+    }
+  }
+
+  if (!best) return null
+
+  // Refinement pass with step=1 around the best coarse position
+  const refineStart = Math.max(0, best.normIndex - step)
+  const refineEnd = Math.min(normHaystack.length, best.normIndex + step + 1)
+  for (let pos = refineStart; pos <= refineEnd; pos++)
+  {
+    for (const wLen of windowSizes)
+    {
+      if (pos + wLen > normHaystack.length) continue
+      const candidate = normHaystack.substring(pos, pos + wLen)
+      const sim = diceCoefficient(normNeedle, candidate)
+      if (sim > best.similarity)
+      {
+        best = { normIndex: pos, normLen: wLen, similarity: sim }
+      }
+    }
+  }
+
+  // Map back to original haystack coordinates
+  const origStart = posMap[best.normIndex]
+  const endIdx = Math.min(best.normIndex + best.normLen - 1, posMap.length - 1)
+  const origEnd = posMap[endIdx] + 1
+
+  return {
+    index: origStart,
+    length: origEnd - origStart,
+    matchedText: haystack.substring(origStart, origEnd),
+    similarity: best.similarity,
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -985,6 +1178,18 @@ ${guidanceInjection}`
       return true
     }
 
+    // Try fuzzy matching as last resort
+    const fuzzyResult = fuzzyFindInText(c.highlightText, reviewText)
+    if (fuzzyResult)
+    {
+      console.log(
+        `[AI Tutor] [${def.name}] Fuzzy-matched highlightText (sim=${fuzzyResult.similarity.toFixed(3)}): ` +
+        `"${fuzzyResult.matchedText.slice(0, 80)}..."`
+      )
+      c.highlightText = fuzzyResult.matchedText
+      return true
+    }
+
     console.warn(
       `[AI Tutor] [${def.name}] WARN: highlightText not found in review text, discarding: ` +
       `"${c.highlightText.slice(0, 80)}..." (comment: "${c.comment.slice(0, 60)}...")`
@@ -1116,20 +1321,35 @@ export function mapCommentsToDocuments(
   let notFoundInMerged = 0
   let directMapped = 0
   let fallbackMapped = 0
+  let fuzzyMapped = 0
   let unmapped = 0
 
   for (const comment of comments)
   {
-    // Step 1: find in merged.tex
-    const mergedPos = mergedTex.indexOf(comment.highlightText)
+    // Step 1: find in merged.tex (exact, then fuzzy)
+    let mergedPos = mergedTex.indexOf(comment.highlightText)
     if (mergedPos === -1)
     {
-      console.warn(
-        `[AI Tutor] Phase 3: WARN: highlightText not found in merged.tex at all: ` +
-        `"${comment.highlightText.slice(0, 80)}..." [${comment.agentName}]`
-      )
-      notFoundInMerged++
-      continue
+      // Try fuzzy match against merged.tex
+      const fuzzyResult = fuzzyFindInText(comment.highlightText, mergedTex)
+      if (fuzzyResult)
+      {
+        console.log(
+          `[AI Tutor] Phase 3: Fuzzy-matched in merged.tex (sim=${fuzzyResult.similarity.toFixed(3)}): ` +
+          `"${fuzzyResult.matchedText.slice(0, 80)}..." [${comment.agentName}]`
+        )
+        comment.highlightText = fuzzyResult.matchedText
+        mergedPos = fuzzyResult.index
+      }
+      else
+      {
+        console.warn(
+          `[AI Tutor] Phase 3: WARN: highlightText not found in merged.tex (exact + fuzzy): ` +
+          `"${comment.highlightText.slice(0, 80)}..." [${comment.agentName}]`
+        )
+        notFoundInMerged++
+        continue
+      }
     }
 
     // Step 2: determine original file
@@ -1143,7 +1363,7 @@ export function mapCommentsToDocuments(
     const originalContent = docContentMap[originalFile]
     if (!originalContent)
     {
-      // Fallback: search all docs for the highlightText
+      // Fallback: search all docs for the highlightText (exact, then fuzzy)
       let found = false
       for (const [docPath, content] of Object.entries(docContentMap))
       {
@@ -1165,10 +1385,41 @@ export function mapCommentsToDocuments(
           break
         }
       }
+      // Try fuzzy fallback across all docs
+      if (!found)
+      {
+        let bestFuzzy = null
+        let bestDocPath = null
+        for (const [docPath, content] of Object.entries(docContentMap))
+        {
+          const fuzzyResult = fuzzyFindInText(comment.highlightText, content)
+          if (fuzzyResult && (!bestFuzzy || fuzzyResult.similarity > bestFuzzy.similarity))
+          {
+            bestFuzzy = fuzzyResult
+            bestDocPath = docPath
+          }
+        }
+        if (bestFuzzy)
+        {
+          comment.highlightText = bestFuzzy.matchedText
+          mapped.push({
+            ...comment,
+            docPath: bestDocPath,
+            startOffset: bestFuzzy.index,
+            endOffset: bestFuzzy.index + bestFuzzy.length,
+          })
+          found = true
+          console.log(
+            `[AI Tutor] Phase 3: Fuzzy fallback across docs (sim=${bestFuzzy.similarity.toFixed(3)}): ` +
+            `found in "${bestDocPath}" for: "${comment.highlightText.slice(0, 50)}..." [${comment.agentName}]`
+          )
+          fuzzyMapped++
+        }
+      }
       if (!found)
       {
         console.warn(
-          `[AI Tutor] Phase 3: WARN: Could not map comment to any document: ` +
+          `[AI Tutor] Phase 3: WARN: Could not map comment to any document (exact + fuzzy): ` +
           `"${comment.highlightText.slice(0, 60)}..." [${comment.agentName}]`
         )
         unmapped++
@@ -1176,11 +1427,30 @@ export function mapCommentsToDocuments(
       continue
     }
 
-    // Step 3: find in original file
-    const originalPos = originalContent.indexOf(comment.highlightText)
+    // Step 3: find in original file (exact, then fuzzy)
+    let originalPos = originalContent.indexOf(comment.highlightText)
     if (originalPos === -1)
     {
-      // Fallback: try searching all docs
+      // Try fuzzy match in expected original file first
+      const fuzzyResult = fuzzyFindInText(comment.highlightText, originalContent)
+      if (fuzzyResult)
+      {
+        console.log(
+          `[AI Tutor] Phase 3: Fuzzy-matched in original file "${originalFile}" (sim=${fuzzyResult.similarity.toFixed(3)}): ` +
+          `"${fuzzyResult.matchedText.slice(0, 80)}..." [${comment.agentName}]`
+        )
+        comment.highlightText = fuzzyResult.matchedText
+        mapped.push({
+          ...comment,
+          docPath: originalFile,
+          startOffset: fuzzyResult.index,
+          endOffset: fuzzyResult.index + fuzzyResult.length,
+        })
+        fuzzyMapped++
+        continue
+      }
+
+      // Fallback: try searching all docs (exact, then fuzzy)
       let found = false
       for (const [docPath, content] of Object.entries(docContentMap))
       {
@@ -1202,10 +1472,41 @@ export function mapCommentsToDocuments(
           break
         }
       }
+      // Try fuzzy fallback across all docs
+      if (!found)
+      {
+        let bestFuzzy = null
+        let bestDocPath = null
+        for (const [docPath, content] of Object.entries(docContentMap))
+        {
+          const fuzzyResult = fuzzyFindInText(comment.highlightText, content)
+          if (fuzzyResult && (!bestFuzzy || fuzzyResult.similarity > bestFuzzy.similarity))
+          {
+            bestFuzzy = fuzzyResult
+            bestDocPath = docPath
+          }
+        }
+        if (bestFuzzy)
+        {
+          comment.highlightText = bestFuzzy.matchedText
+          mapped.push({
+            ...comment,
+            docPath: bestDocPath,
+            startOffset: bestFuzzy.index,
+            endOffset: bestFuzzy.index + bestFuzzy.length,
+          })
+          found = true
+          console.log(
+            `[AI Tutor] Phase 3: Fuzzy fallback across docs (sim=${bestFuzzy.similarity.toFixed(3)}): ` +
+            `found in "${bestDocPath}" for: "${comment.highlightText.slice(0, 50)}..." [${comment.agentName}]`
+          )
+          fuzzyMapped++
+        }
+      }
       if (!found)
       {
         console.warn(
-          `[AI Tutor] Phase 3: WARN: highlightText in merged.tex but not in any original file: ` +
+          `[AI Tutor] Phase 3: WARN: highlightText not in any original file (exact + fuzzy): ` +
           `"${comment.highlightText.slice(0, 60)}..." (expected: ${originalFile}) [${comment.agentName}]`
         )
         unmapped++
@@ -1224,7 +1525,7 @@ export function mapCommentsToDocuments(
 
   console.log(
     `[AI Tutor] Phase 3: Mapping complete — ` +
-    `${directMapped} direct, ${fallbackMapped} fallback, ` +
+    `${directMapped} direct, ${fallbackMapped} fallback, ${fuzzyMapped} fuzzy, ` +
     `${notFoundInMerged} not in merged.tex, ${unmapped} unmapped. ` +
     `Total mapped: ${mapped.length}/${comments.length}`
   )
