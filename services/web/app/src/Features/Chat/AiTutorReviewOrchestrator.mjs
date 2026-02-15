@@ -1589,7 +1589,11 @@ export async function runFullReview({
     )
   }
 
-  const openai = createOpenAI({ apiKey })
+  // Support custom base URL (e.g., for LiteLLM proxy)
+  const baseURL = process.env.OPENAI_BASE_URL
+  const openai = baseURL
+    ? createOpenAI({ apiKey, baseURL })
+    : createOpenAI({ apiKey })
 
   // Read merged.tex from cache
   const mergedTexPath = path.join(cacheDir, 'merged.tex')
