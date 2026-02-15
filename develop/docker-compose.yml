@@ -12,16 +12,12 @@ volumes:
 
 services:
   chat:
-    build:
-      context: ..
-      dockerfile: services/chat/Dockerfile
+    image: ${DOCKER_IMAGE_PREFIX:-ghcr.io/flecart/overleaf}-chat:${DOCKER_IMAGE_TAG:-ai-tutor}
     env_file:
       - dev.env
 
   clsi:
-    build:
-      context: ..
-      dockerfile: services/clsi/Dockerfile
+    image: ${DOCKER_IMAGE_PREFIX:-ghcr.io/flecart/overleaf}-clsi:${DOCKER_IMAGE_TAG:-ai-tutor}
     env_file:
       - dev.env
     environment:
@@ -38,30 +34,22 @@ services:
       - ${PWD}/latexmkrc:/etc/LatexMk:ro
 
   contacts:
-    build:
-      context: ..
-      dockerfile: services/contacts/Dockerfile
+    image: ${DOCKER_IMAGE_PREFIX:-ghcr.io/flecart/overleaf}-contacts:${DOCKER_IMAGE_TAG:-ai-tutor}
     env_file:
       - dev.env
 
   docstore:
-    build:
-      context: ..
-      dockerfile: services/docstore/Dockerfile
+    image: ${DOCKER_IMAGE_PREFIX:-ghcr.io/flecart/overleaf}-docstore:${DOCKER_IMAGE_TAG:-ai-tutor}
     env_file:
       - dev.env
 
   document-updater:
-    build:
-      context: ..
-      dockerfile: services/document-updater/Dockerfile
+    image: ${DOCKER_IMAGE_PREFIX:-ghcr.io/flecart/overleaf}-document-updater:${DOCKER_IMAGE_TAG:-ai-tutor}
     env_file:
       - dev.env
 
   filestore:
-    build:
-      context: ..
-      dockerfile: services/filestore/Dockerfile
+    image: ${DOCKER_IMAGE_PREFIX:-ghcr.io/flecart/overleaf}-filestore:${DOCKER_IMAGE_TAG:-ai-tutor}
     env_file:
       - dev.env
     environment:
@@ -75,9 +63,7 @@ services:
       - history-v1-buckets:/buckets
 
   history-v1:
-    build:
-      context: ..
-      dockerfile: services/history-v1/Dockerfile
+    image: ${DOCKER_IMAGE_PREFIX:-ghcr.io/flecart/overleaf}-history-v1:${DOCKER_IMAGE_TAG:-ai-tutor}
     env_file:
       - dev.env
     environment:
@@ -107,23 +93,17 @@ services:
       - mongo:127.0.0.1
 
   notifications:
-    build:
-      context: ..
-      dockerfile: services/notifications/Dockerfile
+    image: ${DOCKER_IMAGE_PREFIX:-ghcr.io/flecart/overleaf}-notifications:${DOCKER_IMAGE_TAG:-ai-tutor}
     env_file:
       - dev.env
 
   project-history:
-    build:
-      context: ..
-      dockerfile: services/project-history/Dockerfile
+    image: ${DOCKER_IMAGE_PREFIX:-ghcr.io/flecart/overleaf}-project-history:${DOCKER_IMAGE_TAG:-ai-tutor}
     env_file:
       - dev.env
 
   real-time:
-    build:
-      context: ..
-      dockerfile: services/real-time/Dockerfile
+    image: ${DOCKER_IMAGE_PREFIX:-ghcr.io/flecart/overleaf}-real-time:${DOCKER_IMAGE_TAG:-ai-tutor}
     env_file:
       - dev.env
 
@@ -135,10 +115,7 @@ services:
       - redis-data:/data
 
   web:
-    build:
-      context: ..
-      dockerfile: services/web/Dockerfile
-      target: dev
+    image: ${DOCKER_IMAGE_PREFIX:-ghcr.io/flecart/overleaf}-web:${DOCKER_IMAGE_TAG:-ai-tutor}
     env_file:
       - dev.env
       - ../.env_credentials
@@ -170,10 +147,7 @@ services:
       - real-time
 
   webpack:
-    build:
-      context: ..
-      dockerfile: services/web/Dockerfile
-      target: webpack
+    image: ${DOCKER_IMAGE_PREFIX:-ghcr.io/flecart/overleaf}-webpack:${DOCKER_IMAGE_TAG:-ai-tutor}
     command:
       ["npx", "webpack", "serve", "--config", "webpack.config.dev-env.js"]
     ports:
