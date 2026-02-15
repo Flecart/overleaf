@@ -1585,7 +1585,7 @@ export async function runFullReview({
   if (!apiKey)
   {
     throw new Error(
-      'OPENAI_API_KEY not set. Add it to /home/ubuntu/.jiarui/overleaf/.env'
+      'OPENAI_API_KEY environment variable is not set. Please configure it in your .env file or environment.'
     )
   }
 
