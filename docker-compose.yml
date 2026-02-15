@@ -21,7 +21,7 @@ services:
       ########################################################################
       # - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      OVERLEAF_APP_NAME: Overleaf Community Edition
+      OVERLEAF_APP_NAME: EuroSafeAI Intelligent Overleaf
 
       OVERLEAF_MONGO_URL: mongodb://mongo/sharelatex
 
@@ -35,35 +35,65 @@ services:
       # Enables Thumbnail generation using ImageMagick
       ENABLE_CONVERSIONS: "true"
 
-      # Disables email confirmation requirement
-      EMAIL_CONFIRMATION_DISABLED: "true"
+      # Allow public user registration (anyone can create an account)
+      SHARELATEX_ALLOW_PUBLIC_ACCESS: "true"
+
+      # Email confirmation: set to "false" to require email verification
+      # Note: Requires SMTP to be configured for sending confirmation emails
+      EMAIL_CONFIRMATION_DISABLED: ${EMAIL_CONFIRMATION_DISABLED:-true}
+
+      # Restrict registration to specific email domains (comma-separated)
+      # Example: "example.com,university.edu" or leave empty to allow all
+      # SHARELATEX_ALLOWED_EMAIL_DOMAINS: ${SHARELATEX_ALLOWED_EMAIL_DOMAINS:-}
 
       ## Set for SSL via nginx-proxy
       #VIRTUAL_HOST: 103.112.212.22
 
       # OVERLEAF_SITE_URL: http://overleaf.example.com
-      # OVERLEAF_NAV_TITLE: Overleaf Community Edition
-      # OVERLEAF_HEADER_IMAGE_URL: http://example.com/mylogo.png
-      # OVERLEAF_ADMIN_EMAIL: support@it.com
+      OVERLEAF_NAV_TITLE: EuroSafeAI Intelligent Overleaf
+      OVERLEAF_HEADER_IMAGE_URL: https://eurosafeai.github.io/logo.ico
+      OVERLEAF_ADMIN_EMAIL: eurosafeai.zurich@gmail.com
 
       # OVERLEAF_LEFT_FOOTER: '[{"text": "Another page I want to link to can be found <a href=\"here\">here</a>"} ]'
       # OVERLEAF_RIGHT_FOOTER: '[{"text": "Hello I am on the Right"} ]'
 
-      # OVERLEAF_EMAIL_FROM_ADDRESS: "hello@example.com"
+      # Email configuration - injected from environment variables
+      OVERLEAF_EMAIL_FROM_ADDRESS: ${OVERLEAF_EMAIL_FROM_ADDRESS:-}
 
-      # OVERLEAF_EMAIL_AWS_SES_ACCESS_KEY_ID:
-      # OVERLEAF_EMAIL_AWS_SES_SECRET_KEY:
+      # SMTP configuration for sending emails (e.g., Gmail)
+      OVERLEAF_EMAIL_SMTP_HOST: ${OVERLEAF_EMAIL_SMTP_HOST:-}
+      OVERLEAF_EMAIL_SMTP_PORT: ${OVERLEAF_EMAIL_SMTP_PORT:-587}
+      OVERLEAF_EMAIL_SMTP_SECURE: ${OVERLEAF_EMAIL_SMTP_SECURE:-false}
+      OVERLEAF_EMAIL_SMTP_USER: ${OVERLEAF_EMAIL_SMTP_USER:-}
+      OVERLEAF_EMAIL_SMTP_PASS: ${OVERLEAF_EMAIL_SMTP_PASS:-}
+      OVERLEAF_EMAIL_SMTP_TLS_REJECT_UNAUTH: ${OVERLEAF_EMAIL_SMTP_TLS_REJECT_UNAUTH:-true}
+      OVERLEAF_EMAIL_SMTP_IGNORE_TLS: ${OVERLEAF_EMAIL_SMTP_IGNORE_TLS:-false}
 
-      # OVERLEAF_EMAIL_SMTP_HOST: smtp.example.com
-      # OVERLEAF_EMAIL_SMTP_PORT: 587
-      # OVERLEAF_EMAIL_SMTP_SECURE: false
-      # OVERLEAF_EMAIL_SMTP_USER:
-      # OVERLEAF_EMAIL_SMTP_PASS:
-      # OVERLEAF_EMAIL_SMTP_TLS_REJECT_UNAUTH: true
-      # OVERLEAF_EMAIL_SMTP_IGNORE_TLS: false
+      # S3 Storage Configuration (for data persistence)
+      # Filestore S3 backend
+      OVERLEAF_FILESTORE_BACKEND: ${OVERLEAF_FILESTORE_BACKEND:-fs}
+      OVERLEAF_FILESTORE_USER_FILES_BUCKET_NAME: ${OVERLEAF_FILESTORE_USER_FILES_BUCKET_NAME:-}
+      OVERLEAF_FILESTORE_TEMPLATE_FILES_BUCKET_NAME: ${OVERLEAF_FILESTORE_TEMPLATE_FILES_BUCKET_NAME:-}
+      OVERLEAF_FILESTORE_S3_ACCESS_KEY_ID: ${OVERLEAF_FILESTORE_S3_ACCESS_KEY_ID:-}
+      OVERLEAF_FILESTORE_S3_SECRET_ACCESS_KEY: ${OVERLEAF_FILESTORE_S3_SECRET_ACCESS_KEY:-}
+      OVERLEAF_FILESTORE_S3_REGION: ${OVERLEAF_FILESTORE_S3_REGION:-}
+      
+      # History S3 backend
+      OVERLEAF_HISTORY_BACKEND: ${OVERLEAF_HISTORY_BACKEND:-fs}
+      OVERLEAF_HISTORY_PROJECT_BLOBS_BUCKET: ${OVERLEAF_HISTORY_PROJECT_BLOBS_BUCKET:-}
+      OVERLEAF_HISTORY_CHUNKS_BUCKET: ${OVERLEAF_HISTORY_CHUNKS_BUCKET:-}
+      OVERLEAF_HISTORY_S3_ACCESS_KEY_ID: ${OVERLEAF_HISTORY_S3_ACCESS_KEY_ID:-}
+      OVERLEAF_HISTORY_S3_SECRET_ACCESS_KEY: ${OVERLEAF_HISTORY_S3_SECRET_ACCESS_KEY:-}
+      OVERLEAF_HISTORY_S3_REGION: ${OVERLEAF_HISTORY_S3_REGION:-}
+
+      # Optional SMTP settings
       # OVERLEAF_EMAIL_SMTP_NAME: '127.0.0.1'
       # OVERLEAF_EMAIL_SMTP_LOGGER: true
       # OVERLEAF_CUSTOM_EMAIL_FOOTER: "This system is run by department x"
+
+      # AWS SES (alternative to SMTP)
+      # OVERLEAF_EMAIL_AWS_SES_ACCESS_KEY_ID:
+      # OVERLEAF_EMAIL_AWS_SES_SECRET_KEY:
 
       # ENABLE_CRON_RESOURCE_DELETION: true
 
@@ -103,7 +133,7 @@ services:
 
   mongo:
     restart: always
-    image: mongo:6.0
+    image: mongo:8.0
     container_name: mongo
     command: "--replSet overleaf"
     volumes:
