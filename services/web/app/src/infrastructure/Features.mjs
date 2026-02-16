@@ -56,7 +56,12 @@ const Features = {
           Boolean(Settings.overleaf)
         )
       case 'registration':
-        return Boolean(Settings.overleaf)
+        // Enable registration for Community Edition (when no external auth is used)
+        // or for SaaS mode (when Settings.overleaf is set)
+        return (
+          !Features.externalAuthenticationSystemUsed() ||
+          Boolean(Settings.overleaf)
+        )
       case 'chat':
         return Boolean(Settings.disableChat) === false
       case 'link-sharing':

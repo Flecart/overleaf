@@ -22,6 +22,7 @@ import UserInfoController from './Features/User/UserInfoController.mjs'
 import UserController from './Features/User/UserController.mjs'
 import UserEmailsController from './Features/User/UserEmailsController.mjs'
 import UserPagesController from './Features/User/UserPagesController.mjs'
+import UserRegistrationHandler from './Features/User/UserRegistrationHandler.mjs'
 import TutorialController from './Features/Tutorial/TutorialController.mjs'
 import DocumentController from './Features/Documents/DocumentController.mjs'
 import CompileManager from './Features/Compile/CompileManager.mjs'
@@ -116,6 +117,10 @@ const rateLimiters = {
   }),
   deleteUser: new RateLimiter('delete-user', {
     points: 10,
+  }),
+  registerUser: new RateLimiter('register-user', {
+    points: 5,
+    duration: 60 * 60, // 5 registrations per hour per IP
     duration: 60,
   }),
   endorseEmail: new RateLimiter('endorse-email', {
@@ -266,6 +271,53 @@ async function initialize(webRouter, privateApiRouter, publicApiRouter) {
   if (Features.hasFeature('registration-page')) {
     webRouter.get('/register', UserPagesController.registerPage)
     AuthenticationController.addEndpointToLoginWhitelist('/register')
+  }
+
+  // Public user registration endpoint (Community Edition)
+  if (Features.hasFeature('registration')) {
+    webRouter.post(
+      '/register',
+      RateLimiterMiddleware.rateLimit(rateLimiters.registerUser),
+      async (req, res) => {
+        const { email, password } = req.body
+        if (!email || !password) {
+          return res.status(400).json({
+            message: { type: 'error', text: 'Email and password are required' },
+          })
+        }
+        try {
+          const user = await UserRegistrationHandler.promises.registerNewUser({
+            email,
+            password,
+          })
+          // Log the user in after successful registration
+          req.session.justRegistered = true
+          AuthenticationController.finishLogin(user, req, res, err => {
+            if (err) {
+              return res.status(500).json({
+                message: { type: 'error', text: 'Registration successful but login failed' },
+              })
+            }
+            res.json({ redir: '/project' })
+          })
+        } catch (err) {
+          if (err.message === 'EmailAlreadyRegistered') {
+            return res.status(400).json({
+              message: { type: 'error', text: 'This email is already registered' },
+            })
+          }
+          if (err.message === 'request is not valid') {
+            return res.status(400).json({
+              message: { type: 'error', text: 'Invalid email or password format' },
+            })
+          }
+          logger.error({ err }, 'error registering new user')
+          return res.status(500).json({
+            message: { type: 'error', text: 'An error occurred during registration' },
+          })
+        }
+      }
+    )
   }
 
   EditorRouter.apply(webRouter, privateApiRouter)

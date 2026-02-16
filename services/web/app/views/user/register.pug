@@ -25,12 +25,38 @@ block content
 							a(href='/login') #{translate("login_here")}
 
 			.row
-				.col-lg-8.offset-lg-2.col-xl-6.offset-xl-3
+				.col-lg-6.offset-lg-3.col-xl-4.offset-xl-4
 					.page-header
 						h1 #{translate("register")}
-					p
-						| Please contact
-						|
-						strong #{settings.adminEmail}
-						|
-						| to create an account.
+					form(name='registerForm' data-ol-async-form action='/register' method='POST')
+						input(name='_csrf' type='hidden' value=csrfToken)
+						+formMessagesNewStyle
+						.form-group
+							label(for='email') #{translate("email")}
+							input#email.form-control(
+								name='email'
+								type='email'
+								required
+								autofocus='true'
+								autocomplete='email'
+								placeholder='email@example.com'
+							)
+						.form-group
+							label(for='password') #{translate("password")}
+							input#password.form-control(
+								name='password'
+								type='password'
+								autocomplete='new-password'
+								required
+								minlength='8'
+								placeholder='Enter a secure password'
+							)
+							small.form-text.text-muted Password must be at least 8 characters
+						.actions.mt-3
+							button.btn-primary.btn.w-100(type='submit' data-ol-disabled-inflight)
+								span(data-ol-inflight='idle') #{translate("register")}
+								span(hidden data-ol-inflight='pending') Creating account...
+						.mt-3.text-center
+							span #{translate("already_have_sl_account")}
+							|
+							a(href='/login') #{translate("login_here")}
