@@ -1,0 +1,18 @@
+name: Build and Push CLSI Service
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'services/clsi/**'
+      - 'libraries/**'
+  workflow_dispatch:
+
+jobs:
+  build-clsi:
+    uses: ./.github/workflows/build-push-template.yml
+    with:
+      service: clsi
+      image_tag: ai-tutor
+    secrets: inherit

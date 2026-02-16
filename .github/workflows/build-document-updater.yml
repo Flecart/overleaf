@@ -1,0 +1,18 @@
+name: Build and Push Document Updater Service
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'services/document-updater/**'
+      - 'libraries/**'
+  workflow_dispatch:
+
+jobs:
+  build-document-updater:
+    uses: ./.github/workflows/build-push-template.yml
+    with:
+      service: document-updater
+      image_tag: ai-tutor
+    secrets: inherit
